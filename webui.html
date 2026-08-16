@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tavern Regex</title>
+  <style>
+    :root {
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d9e0e8;
+      --accent: #2563eb;
+      --danger: #dc2626;
+      --ok: #16a34a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10151c;
+        --panel: #171e27;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --border: #2a3543;
+        --accent: #60a5fa;
+        --danger: #f87171;
+        --ok: #4ade80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 20px 24px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    h1 { font-size: 20px; margin: 0; }
+    .status { color: var(--muted); font-size: 13px; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      padding: 12px 24px 0;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    button {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    button.danger { color: var(--danger); }
+    .tab.active {
+      border-bottom: 2px solid var(--accent);
+      border-radius: 0;
+      font-weight: 600;
+    }
+    main { padding: 18px 24px 40px; }
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .importbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      padding: 10px;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      align-items: center;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      text-align: left;
+      font-size: 13px;
+    }
+    th { background: var(--panel); color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: 0; }
+    input[type="text"], textarea, input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 6px;
+      font: inherit;
+    }
+    textarea { min-height: 60px; resize: vertical; }
+    .checkbox { width: 16px; height: 16px; }
+    .num { color: var(--muted); }
+    .sortcell { white-space: nowrap; }
+    .sortcell .move { padding: 2px 7px; margin: 0 2px 2px 0; }
+    .empty { padding: 30px; text-align: center; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Tavern Setvar / Regex</h1>
+    <div class="status" id="status">加载中…</div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="presets">预设</button>
+    <button class="tab" data-tab="regexes">正则</button>
+  </div>
+
+  <main>
+    <div class="importbar">
+      <input id="import-file" type="file" accept=".json,application/json" hidden>
+      <button id="import-button">从文件导入并自动识别</button>
+      <span class="status">支持 SillyTavern 预设、正则列表、单条正则和内嵌 regex_scripts；导入预设时自动跳过标记位并按预设顺序排列；表中 ↑↓ 调整顺序，请求时按此顺序注入/执行</span>
+    </div>
+
+    <section id="presets">
+      <div class="toolbar">
+        <button id="add-preset">新增预设</button>
+        <button class="primary" id="save-presets">保存预设</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th></th><th>ID</th><th>名称</th><th>启用</th><th>角色</th><th>内容</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="preset-rows"></tbody>
+      </table>
+    </section>
+
+    <section id="regexes" style="display:none">
+      <div class="toolbar">
+        <button id="add-regex">新增正则</button>
+        <button class="primary" id="save-regexes">保存正则</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th></th><th>ID</th><th>名称</th><th>查找正则</th><th>替换内容</th>
+            <th>停用</th><th>仅输出显示</th><th>仅发送模型</th><th>Placement</th><th>正则替换（不生效）</th>
+            <th>Trim Strings</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="regex-rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const state = { presetItems: [], regexes: [] };
+    const status = document.getElementById('status');
+    const presetRows = document.getElementById('preset-rows');
+    const regexRows = document.getElementById('regex-rows');
+
+    function setStatus(text, ok = true) {
+      status.textContent = text;
+      status.style.color = ok ? 'var(--muted)' : 'var(--danger)';
+    }
+
+    function tab(name) {
+      document.querySelectorAll('.tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
+      document.getElementById('presets').style.display = name === 'presets' ? '' : 'none';
+      document.getElementById('regexes').style.display = name === 'regexes' ? '' : 'none';
+    }
+
+    function makeInput(value, className = '') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = value ?? '';
+      if (className) input.className = className;
+      return input;
+    }
+
+    function makeTextarea(value) {
+      const textarea = document.createElement('textarea');
+      textarea.value = value ?? '';
+      return textarea;
+    }
+
+    function makeCheckbox(checked, className = 'checkbox') {
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!checked;
+      input.className = className;
+      return input;
+    }
+
+    function removeButton() {
+      const button = document.createElement('button');
+      button.textContent = '删除';
+      button.className = 'danger';
+      button.type = 'button';
+      button.addEventListener('click', () => button.closest('tr').remove());
+      return button;
+    }
+
+    function makeRoleSelect(value) {
+      const select = document.createElement('select');
+      ['system', 'user', 'assistant'].forEach(role => {
+        const option = document.createElement('option');
+        option.value = role;
+        option.textContent = role;
+        option.selected = role === (value || 'system');
+        select.appendChild(option);
+      });
+      return select;
+    }
+
+    function makeNumberInput(value, min = '') {
+      const input = document.createElement('input');
+      input.type = 'number';
+      if (min !== '') input.min = min;
+      input.value = value ?? '';
+      return input;
+    }
+
+    function readField(tr, name) {
+      const element = tr.querySelector(`[data-field="${name}"]`);
+      if (!element) return name === 'enabled' ? false : '';
+      if (element.type === 'checkbox') return element.checked;
+      return element.value ?? '';
+    }
+
+    function moveRow(button, dir) {
+      const tr = button.closest('tr');
+      if (dir < 0 && tr.previousElementSibling) {
+        tr.parentNode.insertBefore(tr, tr.previousElementSibling);
+      } else if (dir > 0 && tr.nextElementSibling) {
+        tr.parentNode.insertBefore(tr.nextElementSibling, tr);
+      }
+    }
+
+    function sortCell(index) {
+      const td = document.createElement('td');
+      td.className = 'sortcell';
+      const num = document.createElement('div');
+      num.textContent = index;
+      num.className = 'num';
+      td.appendChild(num);
+      for (const dir of [-1, 1]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'move';
+        button.textContent = dir < 0 ? '↑' : '↓';
+        button.title = dir < 0 ? '上移' : '下移';
+        button.addEventListener('click', () => moveRow(button, dir));
+        td.appendChild(button);
+      }
+      return td;
+    }
+
+    function renderPresets() {
+      presetRows.innerHTML = '';
+      if (!state.presetItems.length) {
+        presetRows.innerHTML = '<tr><td colspan="7" class="empty">暂无预设条目</td></tr>';
+        return;
+      }
+      state.presetItems.forEach((item, index) => {
+        const tr = document.createElement('tr');
+        const fixed = !!item.fixed;
+        tr.dataset.fixed = fixed ? 'true' : 'false';
+
+        const id = makeInput(item.identifier);
+        id.dataset.field = 'identifier';
+        const idTd = document.createElement('td'); idTd.appendChild(id);
+
+        const name = makeInput(item.name);
+        name.dataset.field = 'name';
+        const nameTd = document.createElement('td'); nameTd.appendChild(name);
+
+        const enabled = makeCheckbox(item.enabled);
+        enabled.dataset.field = 'enabled';
+        const enabledTd = document.createElement('td'); enabledTd.style.textAlign = 'center'; enabledTd.appendChild(enabled);
+
+        const roleTd = document.createElement('td');
+        let role;
+        if (fixed) {
+          role = makeInput(item.role || 'system');
+          role.readOnly = true;
+        } else {
+          role = makeRoleSelect(item.role || 'system');
+        }
+        role.dataset.field = 'role';
+        roleTd.appendChild(role);
+
+        const content = makeTextarea(item.content);
+        content.dataset.field = 'content';
+        const contentTd = document.createElement('td'); contentTd.appendChild(content);
+
+        if (fixed) {
+          [id, name, enabled, role, content].forEach(element => {
+            element.disabled = true;
+          });
+        }
+
+        const actionTd = document.createElement('td');
+        if (!fixed) actionTd.appendChild(removeButton());
+        tr.append(sortCell(index + 1), idTd, nameTd, enabledTd, roleTd, contentTd, actionTd);
+        presetRows.appendChild(tr);
+      });
+    }
+
+    function renderRegexes() {
+      regexRows.innerHTML = '';
+      if (!state.regexes.length) {
+        regexRows.innerHTML = '<tr><td colspan="12" class="empty">暂无正则条目</td></tr>';
+        return;
+      }
+      state.regexes.forEach((item, index) => {
+        const tr = document.createElement('tr');
+        const id = makeInput(item.id);
+        id.dataset.field = 'id';
+        const idTd = document.createElement('td'); idTd.appendChild(id);
+
+        const name = makeInput(item.scriptName);
+        name.dataset.field = 'scriptName';
+        const nameTd = document.createElement('td'); nameTd.appendChild(name);
+
+        const find = makeTextarea(item.findRegex);
+        find.dataset.field = 'findRegex';
+        const findTd = document.createElement('td'); findTd.appendChild(find);
+
+        const replace = makeTextarea(item.replaceString);
+        replace.dataset.field = 'replaceString';
+        const replaceTd = document.createElement('td'); replaceTd.appendChild(replace);
+
+        const disabled = makeCheckbox(item.disabled);
+        disabled.dataset.field = 'disabled';
+        const disabledTd = document.createElement('td'); disabledTd.style.textAlign = 'center'; disabledTd.appendChild(disabled);
+
+        const markdown = makeCheckbox(item.markdownOnly);
+        markdown.dataset.field = 'markdownOnly';
+        markdown.title = '只应用到发送给平台的显示文本';
+        const markdownTd = document.createElement('td'); markdownTd.style.textAlign = 'center'; markdownTd.appendChild(markdown);
+
+        const prompt = makeCheckbox(item.promptOnly);
+        prompt.dataset.field = 'promptOnly';
+        prompt.title = '只应用到发送给模型的请求文本';
+        const promptTd = document.createElement('td'); promptTd.style.textAlign = 'center'; promptTd.appendChild(prompt);
+
+        const placement = makeInput((item.placement || []).join(','));
+        placement.dataset.field = 'placement';
+        placement.title = 'SillyTavern placement，例如 0=发送模型，1=输出显示；多个值用逗号分隔';
+        const placementTd = document.createElement('td'); placementTd.appendChild(placement);
+
+        const substitute = makeNumberInput(item.substituteRegex ?? 1, '0');
+        substitute.step = '1';
+        substitute.dataset.field = 'substituteRegex';
+        substitute.title = '是否把替换文本里的正则反向引用也做替换';
+        const substituteTd = document.createElement('td'); substituteTd.appendChild(substitute);
+
+        const trim = makeInput((item.trimStrings || []).join(','));
+        trim.dataset.field = 'trimStrings';
+        trim.title = '执行正则前先移除的字符串，多个用逗号分隔';
+        const trimTd = document.createElement('td'); trimTd.appendChild(trim);
+
+        const delTd = document.createElement('td'); delTd.appendChild(removeButton());
+        tr.append(
+          sortCell(index + 1),
+          idTd,
+          nameTd,
+          findTd,
+          replaceTd,
+          disabledTd,
+          markdownTd,
+          promptTd,
+          placementTd,
+          substituteTd,
+          trimTd,
+          delTd
+        );
+        regexRows.appendChild(tr);
+      });
+    }
+
+    function collectPresets() {
+      return [...presetRows.querySelectorAll('tr')].map(tr => {
+        const identifier = readField(tr, 'identifier').trim();
+        return {
+          identifier,
+          name: readField(tr, 'name'),
+          enabled: readField(tr, 'enabled'),
+          role: readField(tr, 'role').trim() || 'system',
+          content: readField(tr, 'content'),
+          fixed: tr.dataset.fixed === 'true'
+        };
+      }).filter(Boolean);
+    }
+
+    function collectRegexes() {
+      return [...regexRows.querySelectorAll('tr')].map(tr => {
+        const placement = readField(tr, 'placement').split(',')
+          .map(s => parseInt(s.trim(), 10))
+          .filter(Number.isInteger);
+        const trimStrings = readField(tr, 'trimStrings').split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+        return {
+          id: readField(tr, 'id').trim(),
+          scriptName: readField(tr, 'scriptName'),
+          findRegex: readField(tr, 'findRegex'),
+          replaceString: readField(tr, 'replaceString'),
+          disabled: readField(tr, 'disabled'),
+          markdownOnly: readField(tr, 'markdownOnly'),
+          promptOnly: readField(tr, 'promptOnly'),
+          placement,
+          substituteRegex: parseInt(readField(tr, 'substituteRegex'), 10) || 0,
+          trimStrings,
+        };
+      }).filter(Boolean);
+    }
+
+    function presetAdaptNote(result) {
+      const notes = [];
+      if (result.setvar_skipped_markers) {
+        notes.push(`跳过 ${result.setvar_skipped_markers} 条酒馆标记位（内容由 MoFox 自身构建）`);
+      }
+      if (result.setvar_disabled_defaults) {
+        notes.push(`默认停用 ${result.setvar_disabled_defaults} 条与 MoFox 主指令重复的内置提示词`);
+      }
+      return notes.length ? `；${notes.join('，')}` : '';
+    }
+
+    async function load() {
+      setStatus('加载中…');
+      try {
+        const response = await fetch('/plugins/tavern-preset-regex/api/state', { cache: 'no-store' });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        state.presetItems = data.preset_items || data.setvar_prompts || [];
+        state.regexes = data.regexes || [];
+        renderPresets();
+        renderRegexes();
+        setStatus(`已加载：预设 ${state.presetItems.length} 条，正则 ${state.regexes.length} 条`);
+      } catch (error) {
+        setStatus(`加载失败：${error.message}`, false);
+      }
+    }
+
+    async function saveSetvar() {
+      try {
+        const response = await fetch('/plugins/tavern-preset-regex/api/setvar', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: collectPresets() })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        setStatus('预设已保存');
+        await load();
+      } catch (error) {
+        setStatus(`保存预设失败：${error.message}`, false);
+      }
+    }
+
+    async function saveRegex() {
+      try {
+        const response = await fetch('/plugins/tavern-preset-regex/api/regex', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: collectRegexes() })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        setStatus('正则已保存');
+        await load();
+      } catch (error) {
+        setStatus(`保存正则失败：${error.message}`, false);
+      }
+    }
+
+    async function importFile() {
+      const input = document.getElementById('import-file');
+      const file = input.files && input.files[0];
+      if (!file) return;
+      setStatus('正在导入…');
+      try {
+        const content = await file.text();
+        const response = await fetch('/plugins/tavern-preset-regex/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json();
+        if (result.type === 'mixed') {
+          setStatus(`导入成功：预设 ${result.setvar_count} 条，正则 ${result.regex_count} 条` + presetAdaptNote(result));
+        } else if (result.type === 'setvar') {
+          setStatus(`导入成功：预设 ${result.setvar_count} 条` + presetAdaptNote(result));
+        } else {
+          setStatus(`导入成功：正则 ${result.regex_count} 条`);
+        }
+        await load();
+      } catch (error) {
+        setStatus(`导入失败：${error.message}`, false);
+      } finally {
+        input.value = '';
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => tab(btn.dataset.tab)));
+    document.getElementById('add-preset').addEventListener('click', () => {
+      state.presetItems.push({ identifier: '', name: '', enabled: true, role: 'system', content: '', fixed: false });
+      renderPresets();
+    });
+    document.getElementById('add-regex').addEventListener('click', () => {
+      state.regexes.push({ id: '', scriptName: '', findRegex: '', replaceString: '', disabled: false, markdownOnly: false, promptOnly: false, placement: [], substituteRegex: 1, trimStrings: [] });
+      renderRegexes();
+    });
+    document.getElementById('save-presets').addEventListener('click', saveSetvar);
+    document.getElementById('save-regexes').addEventListener('click', saveRegex);
+    document.getElementById('import-button').addEventListener('click', () => document.getElementById('import-file').click());
+    document.getElementById('import-file').addEventListener('change', importFile);
+
+    load();
+  </script>
+</body>
+</html>
