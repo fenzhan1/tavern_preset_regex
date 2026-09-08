@@ -46,18 +46,6 @@ class NovelConfigPayload(BaseModel):
     inject_when_empty: bool | None = Field(
         default=None, description="读完是否仍注入空条目"
     )
-    user_block_position: str | None = Field(
-        default=None,
-        description="对话块位置：auto/strict/before_last_user/head_tail/after_system/end",
-    )
-    head_preset_text: str | None = Field(
-        default=None,
-        description="头部预填充预设内容（head_tail 模式生效）",
-    )
-    head_preset_role: str | None = Field(
-        default=None,
-        description="头部预填充预设角色：user/system/assistant",
-    )
 
 
 class NovelJumpPayload(BaseModel):

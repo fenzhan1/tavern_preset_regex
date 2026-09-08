@@ -87,7 +87,7 @@ def test_assistant_entry_keeps_assistant_role() -> None:
     """排在用户上下文之后的 assistant 条目必须按 assistant 角色注入。"""
     service = FakeService(
         [make_item("preset-a", "assistant", "<think>已完成</think>")],
-        ["mofox_system", "mofox_tool", "mofox_user", "preset-a"],
+        ["mofox_system", "mofox_tool", "mofox_user", "mofox_new_input", "preset-a"],
     )
     payloads = base_payloads()
     demoted = _inject_ordered_setvar_payloads(payloads, service)
@@ -111,7 +111,7 @@ def test_assistant_entry_after_user_block_is_valid() -> None:
     """assistant 条目夹在用户上下文与工具块之间时同样保持 assistant 角色。"""
     service = FakeService(
         [make_item("preset-mid", "assistant", "预填充")],
-        ["mofox_system", "mofox_user", "preset-mid", "mofox_tool"],
+        ["mofox_system", "mofox_user", "mofox_new_input", "preset-mid", "mofox_tool"],
     )
     payloads = base_payloads()
     demoted = _inject_ordered_setvar_payloads(payloads, service)
@@ -125,7 +125,7 @@ def test_assistant_entry_before_user_is_demoted() -> None:
     """assistant 条目排在对话之前时降级为 system，保证序列合法。"""
     service = FakeService(
         [make_item("preset-early", "assistant", "预填充")],
-        ["preset-early", "mofox_system", "mofox_tool", "mofox_user"],
+        ["preset-early", "mofox_system", "mofox_tool", "mofox_user", "mofox_new_input"],
     )
     payloads = base_payloads()
     demoted = _inject_ordered_setvar_payloads(payloads, service)
@@ -142,7 +142,14 @@ def test_consecutive_assistant_entries_demote_second_one() -> None:
             make_item("preset-1", "assistant", "第一条"),
             make_item("preset-2", "assistant", "第二条"),
         ],
-        ["mofox_system", "mofox_tool", "mofox_user", "preset-1", "preset-2"],
+        [
+            "mofox_system",
+            "mofox_tool",
+            "mofox_user",
+            "mofox_new_input",
+            "preset-1",
+            "preset-2",
+        ],
     )
     payloads = base_payloads()
     demoted = _inject_ordered_setvar_payloads(payloads, service)
@@ -154,7 +161,7 @@ def test_consecutive_assistant_entries_demote_second_one() -> None:
 def test_user_entry_keeps_user_role() -> None:
     service = FakeService(
         [make_item("preset-user", "user", "强调输入")],
-        ["mofox_system", "preset-user", "mofox_tool", "mofox_user"],
+        ["mofox_system", "preset-user", "mofox_tool", "mofox_user", "mofox_new_input"],
     )
     payloads = base_payloads()
     _inject_ordered_setvar_payloads(payloads, service)
@@ -167,7 +174,7 @@ def test_user_entry_keeps_user_role() -> None:
 def test_fixed_blocks_are_preserved(role: str) -> None:
     service = FakeService(
         [make_item("preset-x", role, "内容")],
-        ["mofox_system", "preset-x", "mofox_tool", "mofox_user"],
+        ["mofox_system", "preset-x", "mofox_tool", "mofox_user", "mofox_new_input"],
     )
     payloads = base_payloads()
     _inject_ordered_setvar_payloads(payloads, service)

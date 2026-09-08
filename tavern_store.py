@@ -93,13 +93,13 @@ _MOFOX_REDUNDANT_IDENTIFIERS = frozenset(("main", "nsfw"))
 # MoFox 主回复请求里永远存在的三块固定内容。
 _MOFOX_FIXED_PROMPT_IDS = ("mofox_system", "mofox_tool", "mofox_user")
 
-# 只读条目的完整顺序：三块固定内容 + 小说动态条目。
-# 「🆕本轮新输入」是可选条目：它出现在 mofox_order 里时才把对话块拆开，
-# 因此这里不列入默认补齐列表，由 WebUI 拖拽决定。
+# 只读条目的完整顺序：系统提示词、工具声明、对话历史、本轮新输入、小说条目。
+# 它们都是预设条目，可以用 ↑/↓ 自由调整位置，请求按最终顺序发送。
 _MOFOX_FIXED_ORDER_IDS = (
     "mofox_system",
     "mofox_tool",
     "mofox_user",
+    NEW_INPUT_ENTRY_ID,
     NOVEL_ENTRY_ID,
 )
 
@@ -1235,10 +1235,6 @@ class TavernDataService:
             if identifier not in seen:
                 ordered.append(dict(item))
                 seen.add(identifier)
-
-        # 「🆕本轮新输入」是可选条目：不在顺序表里也要显示，方便拖到想要的位置。
-        if NEW_INPUT_ENTRY_ID not in seen:
-            ordered.append(self.new_input_prompt_item())
 
         return ordered
 

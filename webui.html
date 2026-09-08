@@ -170,15 +170,6 @@
 
     <section id="presets">
       <div class="toolbar">
-        <label class="status">对话块位置</label>
-        <select id="block-position" title="「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + 本轮新输入）在请求里的位置">
-          <option value="auto">跟随顺序表</option>
-          <option value="strict">严格按顺序表（mofox_user 只放本轮新输入）</option>
-          <option value="before_last_user">预设排在历史+本轮新输入之后</option>
-          <option value="head_tail">头部预填充 + 预设排在最后</option>
-          <option value="after_system">紧跟系统提示词</option>
-          <option value="end">固定放最后</option>
-        </select>
         <button id="add-preset">新增预设</button>
         <button class="primary" id="save-presets">保存预设</button>
       </div>
@@ -265,19 +256,6 @@
           <label class="novel-label">读完仍注入</label>
           <input type="checkbox" id="novel-empty" class="checkbox">
           <span class="status">小说读完且未开循环时，是否仍注入空的小说条目（默认否，即自动停止注入）</span>
-        </div>
-        <div class="novel-row novel-row-top">
-          <label class="novel-label">头部预填充预设</label>
-          <textarea id="novel-head" class="novel-input" rows="4" placeholder="仅「头部预填充 + 预设排在最后」模式生效：这段内容会排在请求最前面（MoFox 系统提示词之前）"></textarea>
-        </div>
-        <div class="novel-row">
-          <label class="novel-label">头部预设角色</label>
-          <select id="novel-head-role" class="novel-input novel-input-narrow">
-            <option value="user">user</option>
-            <option value="system">system</option>
-            <option value="assistant">assistant</option>
-          </select>
-          <span class="status">assistant 不能出现在请求最前面，建议用 user</span>
         </div>
         <div class="novel-row">
           <button class="primary" id="novel-save">保存小说设置</button>
@@ -410,10 +388,6 @@
 
     function renderPresets() {
       presetRows.innerHTML = '';
-      const blockSelect = document.getElementById('block-position');
-      if (blockSelect && state.novel && state.novel.config) {
-        blockSelect.value = state.novel.config.user_block_position || 'auto';
-      }
       if (!state.presetItems.length) {
         presetRows.innerHTML = '<tr><td colspan="7" class="empty">暂无预设条目</td></tr>';
         return;
@@ -625,32 +599,8 @@
       }
     }
 
-    async function saveBlockPosition() {
-      const value = document.getElementById('block-position').value;
+    async function saveRegex() {
       try {
-        const response = await fetch('/plugins/tavern-preset-regex/api/novel', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_block_position: value })
-        });
-        if (!response.ok) throw new Error(await response.text());
-        const data = await response.json();
-        if (state.novel) state.novel.config = data.config;
-        const labels = {
-          auto: '跟随顺序表（在下方把「MoFox 用户上下文」拖到想要的位置）',
-          strict: '严格按顺序表：mofox_user 位置只放本轮新输入，历史放在第一个预设之前',
-          before_last_user: '历史/回复/工具调用 → 本轮新输入 → 预设条目',
-          head_tail: '头部预填充 → 系统提示词 → 历史 → 本轮新输入 → 其余预设 → 工具声明',
-          after_system: '紧跟系统提示词之后，上一轮回复与工具调用会一起出现在这里',
-          end: '固定放在请求最后'
-        };
-        setStatus(`对话块位置已设为：${labels[value] || value}`);
-      } catch (error) {
-        setStatus(`保存对话块位置失败：${error.message}`, false);
-      }
-    }
-
-    async function saveRegex() {      try {
         const response = await fetch('/plugins/tavern-preset-regex/api/regex', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -717,8 +667,6 @@
       novelEl('novel-variable').value = config.variable_name || 'current_chapter';
       novelEl('novel-role').value = config.role || 'system';
       novelEl('novel-empty').checked = !!config.inject_when_empty;
-      novelEl('novel-head').value = config.head_preset_text || '';
-      novelEl('novel-head-role').value = config.head_preset_role || 'user';
 
       const fileSelect = novelEl('novel-file');
       fileSelect.innerHTML = '';
@@ -804,8 +752,6 @@
         variable_name: novelEl('novel-variable').value.trim() || 'current_chapter',
         role: novelEl('novel-role').value,
         inject_when_empty: novelEl('novel-empty').checked,
-        head_preset_text: novelEl('novel-head').value,
-        head_preset_role: novelEl('novel-head-role').value,
       };
     }
 
@@ -855,7 +801,6 @@
       renderRegexes();
     });
     document.getElementById('save-presets').addEventListener('click', saveSetvar);
-    document.getElementById('block-position').addEventListener('change', saveBlockPosition);
     document.getElementById('save-regexes').addEventListener('click', saveRegex);
     document.getElementById('import-button').addEventListener('click', () => document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change', importFile);

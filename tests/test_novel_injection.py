@@ -489,11 +489,18 @@ def test_request_injects_novel_with_configured_role(tmp_path: Path) -> None:
     所以这里检查「小说正文出现在哪个角色的 payload 里」。
     """
     write_novel(tmp_path)
-    # reader 用 system 角色，避免它与 user 角色的小说条目合并成同一条 payload
+    # reader 用 system 角色，避免它与 user 角色的小说条目合并成同一条 payload；
+    # 小说条目排在 mofox_new_input（user）之后，assistant 角色才不会被降级。
     (tmp_path / "setvar.json").write_text(
         json.dumps(
             setvar_payload(
-                ["mofox_system", "reader", "mofox_user", "novel_current"],
+                [
+                    "mofox_system",
+                    "reader",
+                    "mofox_user",
+                    "mofox_new_input",
+                    "novel_current",
+                ],
                 reader_role="system",
             ),
             ensure_ascii=False,
@@ -555,7 +562,7 @@ def test_webui_state_endpoint_ok(tmp_path: Path) -> None:
     assert service.novel_state("x")["total"] == 3
 
 
-# ----- 对话块位置（user_block_position）-----
+# ----- 预设顺序（mofox_order）-----
 
 
 def prepare_block_fixture(tmp_path: Path) -> None:
@@ -623,57 +630,6 @@ def test_conversation_block_stays_contiguous(tmp_path: Path) -> None:
         and any(isinstance(part, ToolCall) for part in payload.content)
     ]
     assert assistant_with_tools, "带工具调用的 assistant 丢了"
-
-
-def test_user_block_position_head_tail(tmp_path: Path) -> None:
-    """head_tail：头部预填充 → 系统 → 历史 → 新输入 → 预设 → 工具声明。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    plugin.config.plugin.user_block_position = "head_tail"
-    plugin.config.plugin.head_preset_text = "头部预填充预设内容"
-    plugin.config.plugin.head_preset_role = "user"
-
-    payloads = run_request_with(plugin, real_like_payloads())
-    roles = [str(payload.role) for payload in payloads]
-    texts = [
-        "".join(part.text for part in payload.content if isinstance(part, Text))
-        for payload in payloads
-    ]
-
-    # 第 0 条就是头部预填充，且角色为 user
-    assert "头部预填充预设内容" in texts[0], f"头部预填充没有排在最前：{roles}"
-    assert roles[0] == str(ROLE.USER), f"头部预填充角色不对：{roles}"
-    # 紧接着是系统提示词
-    assert "MoFox 系统提示词" in texts[1], f"系统提示词位置不对：{roles}"
-
-    index_of = lambda needle: next(
-        index for index, text in enumerate(texts) if needle in text
-    )
-    suspend_index = index_of("__SUSPEND__")
-    new_input_index = index_of("本轮新输入")
-    prefill_index = index_of("明白了。")
-    tail_index = index_of("然后直接开始输出")
-
-    assert 1 < index_of("系统上下文") < suspend_index, f"历史位置不对：{roles}"
-    assert suspend_index < new_input_index < prefill_index < tail_index, (
-        f"尾部顺序不对：{roles}"
-    )
-    assert roles[prefill_index] == str(ROLE.ASSISTANT), f"预填充被降级：{roles}"
-
-
-def test_head_tail_without_head_text(tmp_path: Path) -> None:
-    """head_preset_text 留空时不注入头部条目。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    plugin.config.plugin.user_block_position = "head_tail"
-    plugin.config.plugin.head_preset_text = ""
-
-    payloads = run_request_with(plugin, real_like_payloads())
-    texts = [
-        "".join(part.text for part in payload.content if isinstance(part, Text))
-        for payload in payloads
-    ]
-    assert "MoFox 系统提示词" in texts[0], f"第一条应是系统提示词：{texts[0][:40]}"
 
 
 def test_new_input_entry_is_reorderable(tmp_path: Path) -> None:
@@ -754,120 +710,6 @@ def test_new_input_merges_with_adjacent_history(tmp_path: Path) -> None:
     assert any("上一轮用户消息" in text and "本轮新输入" in text for text in merged), (
         f"没有合并：{merged}"
     )
-
-
-def test_user_block_position_before_last_user(tmp_path: Path) -> None:
-    """before_last_user：预设条目排在历史与本轮新输入之后。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    plugin.config.plugin.user_block_position = "before_last_user"
-
-    payloads = run_request_with(plugin, real_like_payloads())
-    roles = [str(payload.role) for payload in payloads]
-    texts = [
-        "".join(part.text for part in payload.content if isinstance(part, Text))
-        for payload in payloads
-    ]
-
-    index_of = lambda needle: next(
-        index for index, text in enumerate(texts) if needle in text
-    )
-    suspend_index = index_of("__SUSPEND__")
-    new_input_index = index_of("本轮新输入")
-    prefill_index = index_of("明白了。")
-    tail_index = index_of("然后直接开始输出")
-
-    # 历史（含上轮回复与工具结果）→ 本轮新输入 → 预填充 → 自定义 user
-    assert suspend_index < new_input_index, f"本轮新输入没有紧跟历史：{roles}"
-    assert new_input_index < prefill_index, f"预填充没有排在本轮新输入之后：{roles}"
-    assert prefill_index < tail_index, f"自定义 user 没有排在预填充之后：{roles}"
-    # 历史块内部保持 上下文→回复→工具结果→SUSPEND 连续
-    assert roles[1:5] == [
-        str(ROLE.USER),
-        str(ROLE.ASSISTANT),
-        str(ROLE.TOOL_RESULT),
-        str(ROLE.ASSISTANT),
-    ], f"历史块被打散：{roles}"
-    # 预填充保持 assistant 角色（前面是本轮新输入）
-    assert roles[prefill_index] == str(ROLE.ASSISTANT), f"预填充被降级：{roles}"
-
-
-def test_user_block_position_after_system(tmp_path: Path) -> None:
-    """after_system：对话块紧跟系统提示词，排在所有预设之前。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    plugin.config.plugin.user_block_position = "after_system"
-
-    payloads = run_request_with(plugin, real_like_payloads())
-    roles = [str(payload.role) for payload in payloads]
-
-    # 对话块（历史 + 上轮回复 + 工具调用 + 本轮新输入）必须连续出现
-    convo = [
-        str(ROLE.USER),
-        str(ROLE.ASSISTANT),
-        str(ROLE.TOOL_RESULT),
-        str(ROLE.ASSISTANT),
-        str(ROLE.USER),
-    ]
-    joined = ",".join(roles)
-    assert ",".join(convo) in joined, f"对话块被打散：{roles}"
-
-    # after_system：对话块整体连续出现，内部顺序为 历史→回复→工具→新输入
-    texts = [
-        "".join(part.text for part in payload.content if isinstance(part, Text))
-        for payload in payloads
-    ]
-    convo_start = next(
-        index for index, text in enumerate(texts) if "系统上下文" in text
-    )
-    assert roles[convo_start : convo_start + 5] == convo, f"对话块顺序不对：{roles}"
-    assert "本轮新输入" in texts[convo_start + 4]
-
-
-def test_user_block_position_end(tmp_path: Path) -> None:
-    """end：对话块固定放在最后。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    plugin.config.plugin.user_block_position = "end"
-
-    payloads = run_request_with(plugin, real_like_payloads())
-    assert str(payloads[-1].role) == str(ROLE.USER)
-    assert "本轮新输入" in "".join(
-        part.text for part in payloads[-1].content if isinstance(part, Text)
-    )
-
-
-def test_user_block_position_defaults_to_auto(tmp_path: Path) -> None:
-    """默认 auto：不改动既有顺序表行为。"""
-    prepare_block_fixture(tmp_path)
-    plugin = make_plugin(tmp_path, enabled=False)
-    payloads = run_request_with(plugin, real_like_payloads())
-    roles = [str(payload.role) for payload in payloads]
-    # mofox_order 里 mofox_user 在最后，所以最后仍是 user
-    assert roles[-1] == str(ROLE.USER)
-    assert "本轮新输入" in "".join(
-        part.text for part in payloads[-1].content if isinstance(part, Text)
-    )
-
-
-def test_block_position_saved_via_api(tmp_path: Path) -> None:
-    """WebUI 保存的对话块位置要写进 novel/config.json 并生效。"""
-    prepare_block_fixture(tmp_path)
-    service = make_service(tmp_path, enabled=False)
-    assert service.novel_settings()["user_block_position"] == "auto"
-
-    service.save_novel_settings({"user_block_position": "after_system"})
-    stored = json.loads((tmp_path / "novel" / "config.json").read_text("utf-8"))
-    assert stored == {"user_block_position": "after_system"}
-    assert service.novel_settings()["user_block_position"] == "after_system"
-
-    # TOML 里改的值会被 config.json 覆盖（UI 改动优先）
-    config = TavernRegexConfig()
-    config.plugin.data_dir = str(tmp_path)
-    config.plugin.user_block_position = "end"
-    plugin = type("_FakePlugin", (), {"config": config})()
-    service2 = TavernDataService(tavern_dir=tmp_path, plugin=plugin)
-    assert service2.novel_settings()["user_block_position"] == "after_system"
 
 
 # ----- {{mofox_conversation}} 宏 -----

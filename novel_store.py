@@ -319,19 +319,11 @@ NOVEL_RUNTIME_KEYS: tuple[str, ...] = (
 )
 
 # 预设顺序相关的运行时设置（同样存在 novel/config.json，由 WebUI 保存）
-BLOCK_RUNTIME_KEYS: tuple[str, ...] = (
-    "user_block_position",
-    "head_preset_text",
-    "head_preset_role",
-)
+BLOCK_RUNTIME_KEYS: tuple[str, ...] = ()
 
 ALL_RUNTIME_KEYS: tuple[str, ...] = NOVEL_RUNTIME_KEYS + BLOCK_RUNTIME_KEYS
 
-_BLOCK_DEFAULTS: dict[str, Any] = {
-    "user_block_position": "auto",
-    "head_preset_text": "",
-    "head_preset_role": "user",
-}
+_BLOCK_DEFAULTS: dict[str, Any] = {}
 
 _NOVEL_DEFAULTS: dict[str, Any] = {
     "enabled": False,
@@ -381,18 +373,6 @@ def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     merged["variable_name"] = str(merged["variable_name"] or "current_chapter").strip()
     merged["file"] = str(merged["file"] or "").strip()
     merged["chapter_pattern"] = str(merged["chapter_pattern"] or "")
-    merged["user_block_position"] = (
-        str(merged["user_block_position"])
-        if str(merged["user_block_position"])
-        in ("auto", "strict", "before_last_user", "head_tail", "after_system", "end")
-        else "auto"
-    )
-    merged["head_preset_role"] = (
-        str(merged["head_preset_role"])
-        if str(merged["head_preset_role"]) in ("user", "system", "assistant")
-        else "user"
-    )
-    merged["head_preset_text"] = str(merged["head_preset_text"] or "")
     return merged
 
 
