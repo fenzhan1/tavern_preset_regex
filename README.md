@@ -1,11 +1,12 @@
 # tavern_preset_regex 酒馆兼容插件
 
-插件只做两件事：
+插件做三件事：
 
 1. 直接读取、编辑并注入 `data/tavern_preset_regex/setvar.json` 中的 SillyTavern 变量提示词。
 2. 直接读取、编辑并应用 `data/tavern_preset_regex/regex.json` 中的 SillyTavern 正则脚本。
+3. 读取 `data/tavern_preset_regex/novel/` 下的小说，分段后自动注入当前段落并推进进度。
 
-两者都只在**发送给主回复模型**的 LLM 请求和主回复模型返回结果上生效，不修改平台层
+三者都只在**发送给主回复模型**的 LLM 请求和主回复模型返回结果上生效，不修改平台层
 的原始消息对象。
 
 ## WebUI
@@ -16,14 +17,15 @@
 /plugins/tavern-preset-regex/
 ```
 
-页面包含“预设”和“正则”两个标签，可直接查看、新增、编辑、删除并保存
+页面包含“预设”、“正则”和“小说”三个标签，可直接查看、新增、编辑、删除并保存
 `data/tavern_preset_regex/setvar.json` 与 `data/tavern_preset_regex/regex.json` 中的条目。
 两个表格的每行都有 ↑/↓ 按钮，可调整条目顺序：预设顺序决定注入主回复请求时
 的系统提示词拼接顺序，正则顺序决定规则的先后执行顺序（前一条的替换结果会被
 后一条继续处理）。
 
-预设标签顶部始终包含三条 MoFox 固定条目：系统提示词、Tool 和用户上下文。
-它们只读、不可删除或编辑，但可以和其他酒馆预设条目一起用 ↑/↓ 调整顺序。
+预设标签顶部始终包含三条 MoFox 固定条目：系统提示词、Tool 和用户上下文，
+以及一条「📖小说当前段落」动态条目。它们只读、不可删除或编辑，但可以和其他
+酒馆预设条目一起用 ↑/↓ 调整顺序。
 酒馆预设条目的角色可通过下拉框选择 `system`、`user` 或 `assistant`。
 
 - 角色为 `user` 的酒馆预设会作为临时的 `USER` payload 追加到本次请求，不会写入
@@ -35,6 +37,29 @@
   `debug_log` 打开时记录一条提示，保证请求结构始终合法。
 - 固定条目和酒馆预设的最终顺序完全由 WebUI 的 ↑/↓ 决定，即
   `setvar.json` 中的 `mofox_order`。
+
+## 小说分段自动注入
+
+把小说文件（`.txt` / `.md`）放进 `data/tavern_preset_regex/novel/`，在 WebUI
+「小说」标签里勾选启用，之后每轮主回复请求都会：
+
+1. 取当前段落，写入变量（默认 `current_chapter`），预设里用
+   `{{getvar::current_chapter}}` 读取；
+2. 按 `mofox_order` 的位置，把「📖小说当前段落」条目按设定角色注入请求；
+3. 请求发出后把进度推进到下一段。
+
+分段方式：
+
+| 模式 | 说明 |
+| --- | --- |
+| `auto` | 自动识别章节标题，识别不到就按字数切 |
+| `chapter` | 只按章节标题切（第X章/回/卷、序章/楔子/番外、数字序号、中文序号） |
+| `char` | 按字数切，断点优先换行、其次句末标点 |
+| `line` | 按行数切 |
+
+进度按聊天流隔离，存在 `novel/progress.json`；WebUI 改出的设置存在
+`novel/config.json`，优先于 `config.toml` 的 `[novel]` 段。WebUI 里还能手动
+注入下一段、跳转到指定段、重置进度，并预览当前段落。
 
 页面顶部支持“从文件导入并自动识别”，可以导入：
 
@@ -68,10 +93,12 @@
 - 可通过 `filter_mode`、`user_whitelist`、`user_blacklist`、`group_whitelist`、
   `group_blacklist` 按用户或群聊做白名单 / 黑名单过滤。
 - `data_dir` 可配置 setvar.json 与 regex.json 的存放目录。
+- 小说自动注入只影响主回复请求：`before_llm_request` 里取当前段落、写入变量并
+  注入条目，然后推进进度。
 
 ## 调试
 
-`scripts/` 下有两个只用于排查的脚本，需要 neo-mofox 的虚拟环境：
+`scripts/` 下的排查脚本需要 neo-mofox 的虚拟环境：
 
 ```bash
 # 查看注入后的角色序列与结构校验结果（在 neo-mofox 根目录执行）
@@ -79,9 +106,12 @@ neo-mofox/.venv/Scripts/python.exe ../tavern_preset_regex/scripts/diagnose_role.
 
 # 直接跑一遍 TavernRequestHandler，统计各角色 payload 数量
 neo-mofox/.venv/Scripts/python.exe ../tavern_preset_regex/scripts/diagnose_handler.py
+
+# 用临时目录跑一遍小说分段注入：分段、进度隔离、批量、关闭开关
+neo-mofox/.venv/Scripts/python.exe ../tavern_preset_regex/scripts/diagnose_novel.py
 ```
 
-角色注入的回归测试：
+回归测试：
 
 ```bash
 neo-mofox/.venv/Scripts/python.exe -m pytest ../tavern_preset_regex/tests
@@ -106,6 +136,19 @@ neo-mofox/.venv/Scripts/python.exe -m pytest ../tavern_preset_regex/tests
 /regex enable <编号|名称|id>
 /regex disable <编号|名称|id>
 /regex set <编号|名称|id> <字段> <值>
+
+/novel
+/novel status
+/novel next
+/novel jump <段号>
+/novel reset
+/novel on | off
+/novel list
+/novel file <文件名>
+/novel split <auto|chapter|char|line>
+/novel batch <段数>
+/novel loop <on|off>
+/novel var <变量名>
 ```
 
 `/regex set` 支持 `name`、`pattern`、`replacement`、`markdown`、`prompt`、

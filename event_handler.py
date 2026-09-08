@@ -30,6 +30,54 @@ def _get_config(plugin: Any) -> TavernRegexConfig:
     return TavernRegexConfig()
 
 
+def _stream_id(params: dict[str, Any]) -> str:
+    """从事件参数里取聊天流 ID，用于隔离小说进度。"""
+    meta_data = params.get("meta_data")
+    if isinstance(meta_data, dict):
+        return str(meta_data.get("stream_id", "") or "")
+    return ""
+
+
+def _novel_config(config: TavernRegexConfig) -> Any:
+    return getattr(config, "novel", None)
+
+
+def _inject_novel_segment(
+    config: TavernRegexConfig,
+    params: dict[str, Any],
+    service: TavernDataService,
+) -> dict[str, Any] | None:
+    """取当前小说段落并推进进度。
+
+    返回 ``{"content", "start", "end", "total", "file", "finished", "looped"}``；
+    未启用或没有小说文件时返回 ``None``。
+    """
+    settings = service.novel_settings()
+    if not bool(settings.get("enabled")):
+        return None
+
+    try:
+        state = service.novel_state(_stream_id(params))
+    except ValueError as exc:
+        logger.warning(f"读取小说失败，跳过小说注入: {exc}")
+        return None
+
+    segments: list[str] = list(state.get("segments") or [])
+    active = str(state.get("active_file", "") or "")
+    if not active or not segments:
+        return None
+
+    result = service.novel_service().advance(
+        active,
+        segments,
+        batch_size=int(settings.get("batch_size", 1) or 1),
+        loop=bool(settings.get("loop", False)),
+        stream_id=_stream_id(params),
+    )
+    result["file"] = active
+    return result
+
+
 def _main_request_names(config: TavernRegexConfig) -> set[str]:
     names = getattr(config.plugin, "main_request_names", None) or []
     if not names:
@@ -277,15 +325,40 @@ def _demote_invalid_assistant_payloads(
 def _inject_ordered_setvar_payloads(
     payloads: list[Any],
     service: Any,
+    *,
+    config: TavernRegexConfig | None = None,
+    novel: dict[str, Any] | None = None,
 ) -> list[str]:
-    """按 WebUI 的统一顺序重组三个固定块和酒馆预设条目。
+    """按 WebUI 的统一顺序重组三个固定块、酒馆预设条目与小说当前段落。
+
+    ``novel`` 为本次要注入的小说段落信息（由 :func:`_inject_novel_segment`
+    取得），其内容会作为 ``{{getvar::变量名}}`` 的取值参与渲染。
 
     返回被降级为 system 的 assistant 条目名称列表，便于调用方记录日志。
     """
     if _contains_setvar_marker(payloads):
         return []
 
-    rendered_items = service.render_setvar_payloads()
+    settings: dict[str, Any] = {}
+    if hasattr(service, "novel_settings"):
+        try:
+            settings = service.novel_settings() or {}
+        except Exception:  # noqa: BLE001 - 小说配置异常不影响预设注入
+            settings = {}
+    variable_name = str(settings.get("variable_name") or "current_chapter")
+    seed: dict[str, str] = {}
+    content = str((novel or {}).get("content", "") or "")
+    if content:
+        seed[variable_name] = content
+
+    entry_enabled = bool(settings.get("entry_enabled", True))
+    inject_when_empty = bool(settings.get("inject_when_empty", False))
+    include_novel = entry_enabled and (bool(content) or inject_when_empty)
+
+    rendered_items = service.render_setvar_payloads(
+        seed_variables=seed,
+        include_novel=include_novel,
+    )
     order_ids = service.resolve_mofox_order(service.load_setvar_payload())
     by_identifier = {
         str(item.get("identifier", "") or ""): item for item in rendered_items
@@ -368,16 +441,35 @@ class TavernRequestHandler(BaseEventHandler):
             return EventDecision.SUCCESS, params
 
         demoted: list[str] = []
+        novel_result: dict[str, Any] | None = None
         if config.plugin.inject_setvar:
             service = TavernDataService(plugin=self.plugin)
             if hasattr(service, "render_setvar_payloads") and hasattr(
                 service, "resolve_mofox_order"
             ):
-                demoted = _inject_ordered_setvar_payloads(payloads, service)
+                # 先取当前小说段落并推进进度，再让渲染阶段用它的内容填充变量。
+                novel_result = _inject_novel_segment(config, params, service)
+                if novel_result is not None and config.plugin.debug_log:
+                    logger.info(
+                        "小说注入：file={} 段={}~{} / {} finished={} looped={}".format(
+                            novel_result.get("file"),
+                            novel_result.get("start"),
+                            novel_result.get("end"),
+                            novel_result.get("total"),
+                            novel_result.get("finished"),
+                            novel_result.get("looped"),
+                        )
+                    )
+                demoted = _inject_ordered_setvar_payloads(
+                    payloads,
+                    service,
+                    config=config,
+                    novel=novel_result,
+                )
                 if demoted and config.plugin.debug_log:
                     logger.info(
-                        "以下 assistant 预设条目因顺序非法被降级为 system：%s",
-                        ", ".join(demoted),
+                        "以下 assistant 预设条目因顺序非法被降级为 system："
+                        + ", ".join(demoted)
                     )
             else:
                 _inject_setvar_payload_legacy(
@@ -391,10 +483,13 @@ class TavernRequestHandler(BaseEventHandler):
 
         if config.plugin.debug_log:
             logger.info(
-                "主回复模型请求已处理：request_name=%s payloads=%d roles=%s",
-                params.get("request_name"),
-                len(payloads),
-                ",".join(str(getattr(payload, "role", "")) for payload in payloads),
+                "主回复模型请求已处理：request_name={} payloads={} roles={}".format(
+                    params.get("request_name"),
+                    len(payloads),
+                    ",".join(
+                        str(getattr(payload, "role", "")) for payload in payloads
+                    ),
+                )
             )
 
         return EventDecision.SUCCESS, params
@@ -437,8 +532,9 @@ class TavernResponseHandler(BaseEventHandler):
                     params["message"] = processed
                     if config.plugin.debug_log:
                         logger.info(
-                            "主回复模型结果已处理：request_name=%s",
-                            params.get("request_name"),
+                            "主回复模型结果已处理：request_name={}".format(
+                                params.get("request_name")
+                            )
                         )
 
         return EventDecision.SUCCESS, params

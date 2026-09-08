@@ -22,6 +22,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -52,27 +53,43 @@ def api(
     path: str,
     token: str,
     payload: dict | None = None,
+    *,
+    retries: int = 4,
 ) -> dict:
+    """调用 GitHub REST API；网络抖动（SSL/连接重置）时自动重试。"""
     body = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(
-        f"{API}{path}",
-        data=body,
-        method=method,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "tavern-preset-regex-push",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
-        raise SystemExit(f"GitHub API {method} {path} 失败: {exc.code} {detail}") from exc
+    last_error: Exception | None = None
+
+    for attempt in range(1, retries + 1):
+        request = urllib.request.Request(
+            f"{API}{path}",
+            data=body,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "tavern-preset-regex-push",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise SystemExit(
+                f"GitHub API {method} {path} 失败: {exc.code} {detail}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - 网络层抖动统一重试
+            last_error = exc
+            if attempt < retries:
+                wait = 2 * attempt
+                print(f"  [api] {method} {path} 第 {attempt} 次失败（{exc}），{wait}s 后重试")
+                time.sleep(wait)
+
+    raise SystemExit(f"GitHub API {method} {path} 重试 {retries} 次仍失败: {last_error}")
 
 
 def git(*args: str) -> str:

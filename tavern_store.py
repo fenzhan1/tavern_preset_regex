@@ -14,6 +14,16 @@ from src.app.plugin_system.api.log_api import get_logger
 from src.core.config import get_core_config
 
 from .config import RuleSection, TavernRegexConfig
+from .novel_store import (
+    NOVEL_ENTRY_CONTENT,
+    NOVEL_ENTRY_ID,
+    NOVEL_ENTRY_NAME,
+    NOVEL_RUNTIME_KEYS,
+    NovelRuntimeConfig,
+    NovelService,
+    normalize_novel_config,
+    segment_title,
+)
 
 logger = get_logger("tavern_preset_regex.tavern_store")
 
@@ -77,9 +87,14 @@ _MARKER_IDENTIFIERS = frozenset(
 # 与 MoFox 主回复指令重复的酒馆默认系统提示词，首次导入时默认停用
 _MOFOX_REDUNDANT_IDENTIFIERS = frozenset(("main", "nsfw"))
 
-# MoFox 主回复请求里永远存在的三块固定内容。它们在 WebUI 中作为只读条目展示，
-# 只允许调整相对顺序，不允许编辑名称、角色或内容。
-_MOFOX_FIXED_ORDER_IDS = ("mofox_system", "mofox_tool", "mofox_user")
+# MoFox 主回复请求里永远存在的三块固定内容，加上一条「📖小说当前段落」动态条目。
+# 它们在 WebUI 中作为只读条目展示，只允许调整相对顺序，不允许编辑名称、角色或内容。
+_MOFOX_FIXED_ORDER_IDS = (
+    "mofox_system",
+    "mofox_tool",
+    "mofox_user",
+    NOVEL_ENTRY_ID,
+)
 
 _MOFOX_FIXED_PROMPTS: dict[str, dict[str, Any]] = {
     "mofox_system": {
@@ -368,15 +383,62 @@ def _prompts_in_mofox_order(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return sequence
 
 
-def _ordered_enabled_prompts(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """按统一顺序取出启用的非空提示词。"""
+def _ordered_enabled_prompts(
+    payload: dict[str, Any],
+    extra_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """按统一顺序取出启用的非空提示词。
+
+    ``extra_items`` 用于注入不属于 setvar.json 的虚拟条目（如「📖小说当前段落」），
+    它们按 ``mofox_order`` 的位置参与渲染。
+    """
     order_enabled = dict(_first_order_entries(payload))
+    extras = {
+        str(item.get("identifier", "")): item
+        for item in (extra_items or [])
+        if item.get("identifier")
+    }
+    prompt_by_id = {
+        str(prompt.get("identifier", "") or ""): prompt
+        for prompt in _prompts_in_mofox_order(payload)
+        if prompt.get("identifier")
+    }
+    fixed_ids = set(_MOFOX_FIXED_ORDER_IDS)
     enabled: list[dict[str, Any]] = []
-    for prompt in _prompts_in_mofox_order(payload):
-        identifier = str(prompt.get("identifier", "") or "")
+    used: set[str] = set()
+
+    for identifier in TavernDataService._normalized_mofox_order(
+        payload, append_missing=True
+    ):
+        if identifier in fixed_ids or identifier in used:
+            continue
+        extra = extras.get(identifier)
+        if extra is not None:
+            used.add(identifier)
+            if extra.get("enabled") and str(extra.get("content", "")).strip():
+                enabled.append(extra)
+            continue
+        prompt = prompt_by_id.get(identifier)
+        if prompt is None:
+            continue
+        used.add(identifier)
         effective = order_enabled.get(identifier, bool(prompt.get("enabled", True)))
         if effective and prompt.get("content"):
             enabled.append(prompt)
+
+    for identifier, prompt in prompt_by_id.items():
+        if identifier in used:
+            continue
+        effective = order_enabled.get(identifier, bool(prompt.get("enabled", True)))
+        if effective and prompt.get("content"):
+            enabled.append(prompt)
+
+    for identifier, extra in extras.items():
+        if identifier in used:
+            continue
+        if extra.get("enabled") and str(extra.get("content", "")).strip():
+            enabled.append(extra)
+
     return enabled
 
 
@@ -391,6 +453,7 @@ class TavernDataService:
         self.tavern_dir = self._resolve_tavern_dir(tavern_dir, plugin)
         self.setvar_path = self.tavern_dir / "setvar.json"
         self.regex_path = self.tavern_dir / "regex.json"
+        self.novel_dir = self.tavern_dir / "novel"
         self.plugin = plugin
 
     @staticmethod
@@ -518,6 +581,36 @@ class TavernDataService:
         """返回 WebUI 展示的三个 MoFox 固定条目。"""
         return [dict(_MOFOX_FIXED_PROMPTS[key]) for key in _MOFOX_FIXED_ORDER_IDS]
 
+    def novel_prompt_item(self) -> dict[str, Any]:
+        """返回「📖小说当前段落」虚拟条目。
+
+        内容固定为 ``{{getvar::变量名}}``，由小说进度在渲染时填充，因此条目本身
+        只需要维护启用状态与在 ``mofox_order`` 中的位置。
+        """
+        try:
+            settings = self.novel_settings()
+        except Exception:  # noqa: BLE001 - 配置读取异常时退回默认值
+            settings = {}
+        variable = str(settings.get("variable_name") or "current_chapter")
+        return {
+            "identifier": NOVEL_ENTRY_ID,
+            "name": NOVEL_ENTRY_NAME,
+            "role": str(settings.get("role") or "system"),
+            "content": NOVEL_ENTRY_CONTENT.replace("current_chapter", variable),
+            "enabled": bool(settings.get("entry_enabled", True)),
+            "fixed": True,
+            "novel": True,
+        }
+
+    def readonly_prompt_items(self) -> list[dict[str, Any]]:
+        """返回所有只读条目：三条 MoFox 固定块 + 小说动态条目。"""
+        return [*self.fixed_prompt_items(), self.novel_prompt_item()]
+
+    @staticmethod
+    def _readonly_identifiers() -> set[str]:
+        """只读条目的 identifier 集合，用于保存时过滤。"""
+        return {*_MOFOX_FIXED_ORDER_IDS}
+
     @staticmethod
     def _prompt_identifiers(payload: dict[str, Any]) -> list[str]:
         """提取 payload 中全部可排序的酒馆预设 identifier。"""
@@ -590,6 +683,160 @@ class TavernDataService:
         ]
         self.save_setvar_payload(payload)
 
+    # ----- 小说分段注入 -----
+    def novel_service(self) -> NovelService:
+        """返回绑定到 ``novel/`` 目录的小说服务。"""
+        return NovelService(self.novel_dir)
+
+    def novel_config(self) -> Any:
+        """返回插件 config.toml 里的小说配置段（缺失时返回 None）。"""
+        config = getattr(self.plugin, "config", None)
+        return getattr(config, "novel", None)
+
+    def novel_settings(self) -> dict[str, Any]:
+        """合并 config.toml 的 ``[novel]`` 与 ``novel/config.json`` 的运行时设置。"""
+        novel = self.novel_config()
+        base: dict[str, Any] = {}
+        if novel is not None:
+            base = {
+                key: getattr(novel, key)
+                for key in NOVEL_RUNTIME_KEYS
+                if hasattr(novel, key)
+            }
+        runtime = NovelRuntimeConfig(self.novel_dir).load()
+        base.update(runtime)
+        return normalize_novel_config(base)
+
+    def save_novel_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """保存运行时小说设置到 ``novel/config.json``。"""
+        return NovelRuntimeConfig(self.novel_dir).save(updates)
+
+    def resolve_novel_file(self, name: str) -> Path:
+        """校验小说文件名并返回路径。"""
+        return self.novel_service().resolve_file(name)
+
+    def active_novel_file(self) -> str:
+        """当前小说文件名：设置优先，未配置时取目录里第一个。"""
+        settings = self.novel_settings()
+        configured = str(settings.get("file", "") or "").strip()
+        if configured:
+            return configured
+        files = self.novel_service().list_files()
+        return str(files[0]["name"]) if files else ""
+
+    def _load_novel_segments(
+        self,
+        active: str,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """按当前设置读取并切分小说。"""
+        return self.novel_service().load_segments(
+            active,
+            mode=str(settings.get("split_mode", "auto")),
+            char_size=int(settings.get("char_size", 10000)),
+            lines_per_segment=int(settings.get("lines_per_segment", 60)),
+            chapter_pattern=str(settings.get("chapter_pattern", "")),
+        )
+
+    def novel_state(self, stream_id: str | None = None) -> dict[str, Any]:
+        """返回小说功能完整状态，供 WebUI 与命令使用。"""
+        service = self.novel_service()
+        files = service.list_files()
+        active = self.active_novel_file()
+        config_payload = self.novel_settings()
+
+        state: dict[str, Any] = {
+            "dir": str(self.novel_dir),
+            "files": files,
+            "active_file": active,
+            "config": config_payload,
+            "segments": [],
+            "segment_titles": [],
+            "segment_chars": [],
+            "index": 0,
+            "total": 0,
+            "mode": "",
+            "label": "",
+            "chars": 0,
+            "error": "",
+        }
+        if not active:
+            return state
+
+        try:
+            loaded = self._load_novel_segments(active, config_payload)
+        except ValueError as exc:
+            state["error"] = str(exc)
+            return state
+
+        segments: list[str] = list(loaded["segments"])
+        state["segments"] = segments
+        state["segment_titles"] = [segment_title(item) for item in segments]
+        state["segment_chars"] = [len(item) for item in segments]
+        state["total"] = len(segments)
+        state["mode"] = loaded["mode"]
+        state["label"] = loaded["label"]
+        state["chars"] = loaded["chars"]
+        state["index"] = service.get_index(active, stream_id)
+        return state
+
+    def advance_novel(
+        self,
+        stream_id: str | None = None,
+    ) -> dict[str, Any]:
+        """手动推进小说进度，返回本次注入的段落信息。"""
+        settings = self.novel_settings()
+        service = self.novel_service()
+        active = self.active_novel_file()
+        if not active:
+            raise ValueError("novel/ 目录下没有小说文件")
+
+        loaded = self._load_novel_segments(active, settings)
+        result = service.advance(
+            active,
+            list(loaded["segments"]),
+            batch_size=int(settings.get("batch_size", 1)),
+            loop=bool(settings.get("loop", False)),
+            stream_id=stream_id,
+        )
+        result["file"] = active
+        result["mode"] = loaded["mode"]
+        result["label"] = loaded["label"]
+        return result
+
+    def jump_novel(
+        self,
+        index: int,
+        stream_id: str | None = None,
+    ) -> dict[str, Any]:
+        """把进度定位到第 index 段（1 起始）并返回该段内容。"""
+        settings = self.novel_settings()
+        service = self.novel_service()
+        active = self.active_novel_file()
+        if not active:
+            raise ValueError("novel/ 目录下没有小说文件")
+
+        loaded = self._load_novel_segments(active, settings)
+        segments = list(loaded["segments"])
+        if not segments:
+            raise ValueError("小说分段为空")
+        target = max(1, min(int(index), len(segments)))
+        service.set_index(active, target - 1, stream_id)
+        return service.advance(
+            active,
+            segments,
+            batch_size=int(settings.get("batch_size", 1)),
+            loop=bool(settings.get("loop", False)),
+            stream_id=stream_id,
+        )
+
+    def reset_novel(self, stream_id: str | None = None) -> None:
+        """把小说进度重置到第一段。"""
+        active = self.active_novel_file()
+        if not active:
+            raise ValueError("novel/ 目录下没有小说文件")
+        self.novel_service().reset_progress(active, stream_id)
+
     @staticmethod
     def _bot_name() -> str:
         try:
@@ -600,13 +847,17 @@ class TavernDataService:
     def _render_prompts(
         self,
         payload: dict[str, Any] | None = None,
+        *,
+        seed_variables: dict[str, str] | None = None,
+        include_novel: bool = False,
     ) -> tuple[str, dict[str, str], int]:
         """渲染 setvar.json 中启用的提示词。"""
         payload = payload or self.load_setvar_payload()
-        variables: dict[str, str] = {}
+        variables: dict[str, str] = dict(seed_variables or {})
         blocks: list[str] = []
         count = 0
-        for prompt in _ordered_enabled_prompts(payload):
+        extras = [self.novel_prompt_item()] if include_novel else None
+        for prompt in _ordered_enabled_prompts(payload, extras):
             rendered = _render_tavern_macros(
                 str(prompt.get("content", "")),
                 variables,
@@ -628,18 +879,27 @@ class TavernDataService:
         prompt_text, _, _ = self._render_prompts()
         return prompt_text
 
-    def render_setvar_payloads(self) -> list[dict[str, Any]]:
+    def render_setvar_payloads(
+        self,
+        *,
+        seed_variables: dict[str, str] | None = None,
+        include_novel: bool = False,
+    ) -> list[dict[str, Any]]:
         """按顺序渲染启用的酒馆预设条目。
 
         与 :meth:`render_setvar_prompt` 使用相同的变量解析顺序，但保留每条
         预设的 identifier、name、role 和渲染后的 content，便于请求组装时参与
         统一排序。
+
+        ``seed_variables`` 用于预先塞入变量（例如小说当前段落），
+        ``include_novel`` 决定是否把「📖小说当前段落」虚拟条目一起渲染。
         """
         payload = self.load_setvar_payload()
-        variables: dict[str, str] = {}
+        variables: dict[str, str] = dict(seed_variables or {})
         rendered_items: list[dict[str, Any]] = []
+        extras = [self.novel_prompt_item()] if include_novel else None
 
-        for prompt in _ordered_enabled_prompts(payload):
+        for prompt in _ordered_enabled_prompts(payload, extras):
             content = _render_tavern_macros(
                 str(prompt.get("content", "")),
                 variables,
@@ -892,7 +1152,7 @@ class TavernDataService:
         ]
 
     def list_ordered_prompt_items(self) -> list[dict[str, Any]]:
-        """按统一顺序列出固定条目与酒馆预设条目，供 WebUI 使用。"""
+        """按统一顺序列出只读条目与酒馆预设条目，供 WebUI 使用。"""
         payload = self.load_setvar_payload()
         setvar_items = self.list_setvar_items()
         by_identifier = {
@@ -900,15 +1160,15 @@ class TavernDataService:
             for item in setvar_items
             if item.get("identifier")
         }
-        fixed_items = {
-            str(item["identifier"]): item for item in self.fixed_prompt_items()
+        readonly_items = {
+            str(item["identifier"]): item for item in self.readonly_prompt_items()
         }
 
         ordered: list[dict[str, Any]] = []
         seen: set[str] = set()
         for identifier in self.resolve_mofox_order(payload):
-            if identifier in fixed_items:
-                ordered.append(dict(fixed_items[identifier]))
+            if identifier in readonly_items:
+                ordered.append(dict(readonly_items[identifier]))
                 seen.add(identifier)
                 continue
             item = by_identifier.get(identifier)
@@ -921,19 +1181,21 @@ class TavernDataService:
             if identifier and identifier not in seen:
                 ordered.append(item)
 
+        for identifier, item in readonly_items.items():
+            if identifier not in seen:
+                ordered.append(dict(item))
+
         return ordered
 
     def save_setvar_items(self, items: list[dict[str, Any]]) -> int:
         """保存 WebUI 编辑后的预设条目，并按提交顺序重建 prompt_order。"""
         payload = self.load_setvar_payload()
-        fixed_identifiers = {
-            str(item["identifier"]) for item in self.fixed_prompt_items()
-        }
+        readonly_identifiers = self._readonly_identifiers()
         editable_items = [
             item
             for item in items
             if isinstance(item, dict)
-            and str(item.get("identifier", "") or "") not in fixed_identifiers
+            and str(item.get("identifier", "") or "") not in readonly_identifiers
         ]
         existing_by_id = {
             str(prompt.get("identifier", "")): prompt

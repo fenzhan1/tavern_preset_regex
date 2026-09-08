@@ -117,6 +117,35 @@
     .sortcell { white-space: nowrap; }
     .sortcell .move { padding: 2px 7px; margin: 0 2px 2px 0; }
     .empty { padding: 30px; text-align: center; color: var(--muted); }
+    .novel-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .novel-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .novel-row-top { align-items: flex-start; }
+    .novel-label { min-width: 120px; color: var(--muted); font-size: 13px; }
+    .novel-label-inline { min-width: auto; }
+    .novel-input { max-width: 360px; }
+    .novel-input-narrow { max-width: 140px; }
+    .novel-preview {
+      flex: 1;
+      min-height: 120px;
+      max-height: 320px;
+      overflow: auto;
+      margin: 0;
+      padding: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
@@ -128,10 +157,11 @@
   <div class="tabs">
     <button class="tab active" data-tab="presets">预设</button>
     <button class="tab" data-tab="regexes">正则</button>
+    <button class="tab" data-tab="novel">小说</button>
   </div>
 
   <main>
-    <div class="importbar">
+    <div class="importbar" id="importbar">
       <input id="import-file" type="file" accept=".json,application/json" hidden>
       <button id="import-button">从文件导入并自动识别</button>
       <span class="status">支持 SillyTavern 预设、正则列表、单条正则和内嵌 regex_scripts；导入预设时自动跳过标记位并按预设顺序排列；表中 ↑↓ 调整顺序，请求时按此顺序注入/执行</span>
@@ -168,10 +198,83 @@
         <tbody id="regex-rows"></tbody>
       </table>
     </section>
+    <section id="novel" style="display:none">
+      <div class="novel-panel">
+        <div class="novel-row">
+          <label class="novel-label">启用小说自动注入</label>
+          <input type="checkbox" id="novel-enabled" class="checkbox">
+          <span class="status" id="novel-hint">开启后每轮主回复请求自动注入当前段落并推进进度</span>
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">小说文件</label>
+          <select id="novel-file" class="novel-input"></select>
+          <button id="novel-refresh" type="button">重新扫描目录</button>
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">分段方式</label>
+          <select id="novel-splitmode" class="novel-input">
+            <option value="auto">自动识别章节标题</option>
+            <option value="chapter">只按章节（第X章）</option>
+            <option value="char">按字数</option>
+            <option value="line">按行数</option>
+          </select>
+          <span class="status" id="novel-mode-hint"></span>
+        </div>
+        <div class="novel-row" id="novel-row-charsize">
+          <label class="novel-label">每段字数</label>
+          <input type="number" id="novel-charsize" class="novel-input" min="1" step="1">
+        </div>
+        <div class="novel-row" id="novel-row-lines">
+          <label class="novel-label">每段行数</label>
+          <input type="number" id="novel-lines" class="novel-input" min="1" step="1">
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">自定义章节正则</label>
+          <input type="text" id="novel-pattern" class="novel-input" placeholder="留空使用内置识别">
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">每次注入段数</label>
+          <input type="number" id="novel-batch" class="novel-input" min="1" step="1">
+          <label class="novel-label novel-label-inline">循环</label>
+          <input type="checkbox" id="novel-loop" class="checkbox">
+          <label class="novel-label novel-label-inline">注入条目</label>
+          <input type="checkbox" id="novel-entry" class="checkbox">
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">变量名</label>
+          <input type="text" id="novel-variable" class="novel-input" placeholder="current_chapter">
+          <label class="novel-label novel-label-inline">角色</label>
+          <select id="novel-role" class="novel-input novel-input-narrow">
+            <option value="system">system</option>
+            <option value="user">user</option>
+            <option value="assistant">assistant</option>
+          </select>
+        </div>
+        <div class="novel-row">
+          <button class="primary" id="novel-save">保存小说设置</button>
+          <button id="novel-next">▶ 手动注入下一段</button>
+          <button id="novel-reset">重置进度</button>
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">跳转到第</label>
+          <input type="number" id="novel-jump" class="novel-input novel-input-narrow" min="1" step="1" placeholder="段号">
+          <button id="novel-jump-btn">跳转</button>
+          <span class="status" id="novel-progress"></span>
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">目录</label>
+          <select id="novel-toc" class="novel-input"></select>
+        </div>
+        <div class="novel-row novel-row-top">
+          <label class="novel-label">当前段落预览</label>
+          <pre class="novel-preview" id="novel-preview">未导入小说</pre>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
-    const state = { presetItems: [], regexes: [] };
+    const state = { presetItems: [], regexes: [], novel: null };
     const status = document.getElementById('status');
     const presetRows = document.getElementById('preset-rows');
     const regexRows = document.getElementById('regex-rows');
@@ -185,6 +288,9 @@
       document.querySelectorAll('.tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === name));
       document.getElementById('presets').style.display = name === 'presets' ? '' : 'none';
       document.getElementById('regexes').style.display = name === 'regexes' ? '' : 'none';
+      document.getElementById('novel').style.display = name === 'novel' ? '' : 'none';
+      document.getElementById('importbar').style.display = name === 'novel' ? 'none' : '';
+      if (name === 'novel') loadNovel();
     }
 
     function makeInput(value, className = '') {
@@ -282,6 +388,7 @@
       state.presetItems.forEach((item, index) => {
         const tr = document.createElement('tr');
         const fixed = !!item.fixed;
+        const isNovel = !!item.novel;
         tr.dataset.fixed = fixed ? 'true' : 'false';
 
         const id = makeInput(item.identifier);
@@ -290,7 +397,14 @@
 
         const name = makeInput(item.name);
         name.dataset.field = 'name';
-        const nameTd = document.createElement('td'); nameTd.appendChild(name);
+        const nameTd = document.createElement('td');
+        nameTd.appendChild(name);
+        if (isNovel) {
+          const badge = document.createElement('div');
+          badge.className = 'num';
+          badge.textContent = '动态内容：由小说进度填充';
+          nameTd.appendChild(badge);
+        }
 
         const enabled = makeCheckbox(item.enabled);
         enabled.dataset.field = 'enabled';
@@ -453,8 +567,10 @@
         const data = await response.json();
         state.presetItems = data.preset_items || data.setvar_prompts || [];
         state.regexes = data.regexes || [];
+        state.novel = data.novel || state.novel;
         renderPresets();
         renderRegexes();
+        if (state.novel) renderNovel(state.novel);
         setStatus(`已加载：预设 ${state.presetItems.length} 条，正则 ${state.regexes.length} 条`);
       } catch (error) {
         setStatus(`加载失败：${error.message}`, false);
@@ -520,8 +636,154 @@
       }
     }
 
-    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => tab(btn.dataset.tab)));
-    document.getElementById('add-preset').addEventListener('click', () => {
+    // ---------- 小说分段注入 ----------
+    function novelEl(id) { return document.getElementById(id); }
+
+    function currentStreamId() {
+      try {
+        return new URLSearchParams(window.location.search).get('stream_id') || '';
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function fillNovelForm(novel) {
+      const config = novel.config || {};
+      novelEl('novel-enabled').checked = !!config.enabled;
+      novelEl('novel-splitmode').value = config.split_mode || 'auto';
+      novelEl('novel-charsize').value = config.char_size || 10000;
+      novelEl('novel-lines').value = config.lines_per_segment || 60;
+      novelEl('novel-pattern').value = config.chapter_pattern || '';
+      novelEl('novel-batch').value = config.batch_size || 1;
+      novelEl('novel-loop').checked = !!config.loop;
+      novelEl('novel-entry').checked = !!config.entry_enabled;
+      novelEl('novel-variable').value = config.variable_name || 'current_chapter';
+      novelEl('novel-role').value = config.role || 'system';
+
+      const fileSelect = novelEl('novel-file');
+      fileSelect.innerHTML = '';
+      if (!novel.files || !novel.files.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '（novel/ 目录里还没有小说文件）';
+        fileSelect.appendChild(option);
+      } else {
+        novel.files.forEach(item => {
+          const option = document.createElement('option');
+          option.value = item.name;
+          option.textContent = `${item.name}（${Math.round(item.size / 1024)} KB）`;
+          option.selected = item.name === novel.active_file;
+          fileSelect.appendChild(option);
+        });
+      }
+      updateNovelVisibility();
+    }
+
+    function updateNovelVisibility() {
+      const mode = novelEl('novel-splitmode').value;
+      novelEl('novel-row-charsize').style.display = mode === 'char' ? '' : 'none';
+      novelEl('novel-row-lines').style.display = mode === 'line' ? '' : 'none';
+      const novel = state.novel || {};
+      novelEl('novel-mode-hint').textContent = novel.label ? `当前切分：${novel.label}` : '';
+    }
+
+    function renderNovel(novel) {
+      state.novel = novel;
+      fillNovelForm(novel);
+      if (novel.error) {
+        novelEl('novel-preview').textContent = `读取小说失败：${novel.error}`;
+        novelEl('novel-progress').textContent = '';
+        novelEl('novel-toc').innerHTML = '';
+        return;
+      }
+      const total = novel.total || 0;
+      const index = novel.index || 0;
+      novelEl('novel-progress').textContent = total
+        ? `进度：${Math.min(index + 1, total)} / ${total} 段（已注入 ${index} 段，全文 ${novel.chars} 字）`
+        : '尚未导入小说';
+      novelEl('novel-preview').textContent = novel.preview
+        ? novel.preview
+        : (total ? '（已读完最后一章）' : '未导入小说');
+
+      const toc = novelEl('novel-toc');
+      toc.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '—— 选择要跳转的段落 ——';
+      toc.appendChild(placeholder);
+      (novel.segment_titles || []).forEach((title, i) => {
+        const option = document.createElement('option');
+        option.value = String(i + 1);
+        option.textContent = `${i + 1}. ${title}`;
+        if (i + 1 === index + 1) option.selected = true;
+        toc.appendChild(option);
+      });
+    }
+
+    async function loadNovel() {
+      try {
+        const response = await fetch(`/plugins/tavern-preset-regex/api/novel?stream_id=${encodeURIComponent(currentStreamId())}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(await response.text());
+        renderNovel(await response.json());
+      } catch (error) {
+        setStatus(`加载小说状态失败：${error.message}`, false);
+      }
+    }
+
+    function novelPayload() {
+      return {
+        enabled: novelEl('novel-enabled').checked,
+        file: novelEl('novel-file').value || '',
+        split_mode: novelEl('novel-splitmode').value,
+        char_size: parseInt(novelEl('novel-charsize').value, 10) || 10000,
+        lines_per_segment: parseInt(novelEl('novel-lines').value, 10) || 60,
+        chapter_pattern: novelEl('novel-pattern').value || '',
+        batch_size: parseInt(novelEl('novel-batch').value, 10) || 1,
+        loop: novelEl('novel-loop').checked,
+        entry_enabled: novelEl('novel-entry').checked,
+        variable_name: novelEl('novel-variable').value.trim() || 'current_chapter',
+        role: novelEl('novel-role').value,
+      };
+    }
+
+    async function saveNovel() {
+      try {
+        const response = await fetch('/plugins/tavern-preset-regex/api/novel', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(novelPayload())
+        });
+        if (!response.ok) throw new Error(await response.text());
+        renderNovel(await response.json());
+        setStatus('小说设置已保存');
+        await load();
+      } catch (error) {
+        setStatus(`保存小说设置失败：${error.message}`, false);
+      }
+    }
+
+    async function novelAction(path, body) {
+      try {
+        const response = await fetch(`/plugins/tavern-preset-regex/api/novel/${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stream_id: currentStreamId(), ...(body || {}) })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        renderNovel(data);
+        const result = data.result || {};
+        if (result.start) {
+          setStatus(`已注入第 ${result.start} ~ ${result.end} 段（共 ${result.total} 段）${result.finished ? '，已到末尾' : ''}`);
+        } else {
+          setStatus('操作完成');
+        }
+      } catch (error) {
+        setStatus(`操作失败：${error.message}`, false);
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => tab(btn.dataset.tab)));    document.getElementById('add-preset').addEventListener('click', () => {
       state.presetItems.push({ identifier: '', name: '', enabled: true, role: 'system', content: '', fixed: false });
       renderPresets();
     });
@@ -533,6 +795,21 @@
     document.getElementById('save-regexes').addEventListener('click', saveRegex);
     document.getElementById('import-button').addEventListener('click', () => document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change', importFile);
+
+    novelEl('novel-save').addEventListener('click', saveNovel);
+    novelEl('novel-splitmode').addEventListener('change', updateNovelVisibility);
+    novelEl('novel-refresh').addEventListener('click', loadNovel);
+    novelEl('novel-next').addEventListener('click', () => novelAction('next'));
+    novelEl('novel-reset').addEventListener('click', () => novelAction('reset'));
+    novelEl('novel-jump-btn').addEventListener('click', () => {
+      const index = parseInt(novelEl('novel-jump').value, 10);
+      if (!index || index < 1) { setStatus('请输入有效的段号', false); return; }
+      novelAction('jump', { index });
+    });
+    novelEl('novel-toc').addEventListener('change', () => {
+      const index = parseInt(novelEl('novel-toc').value, 10);
+      if (index >= 1) novelAction('jump', { index });
+    });
 
     load();
   </script>

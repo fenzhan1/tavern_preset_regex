@@ -34,13 +34,18 @@ _tavern_role_to_role = event_handler._tavern_role_to_role
 
 
 class FakeService:
-    """只实现注入流程需要的三个方法。"""
+    """只实现注入流程需要的几个方法。"""
 
     def __init__(self, items: list[dict[str, object]], order: list[str]) -> None:
         self._items = items
         self._order = order
 
-    def render_setvar_payloads(self) -> list[dict[str, object]]:
+    def render_setvar_payloads(
+        self,
+        *,
+        seed_variables: dict[str, str] | None = None,
+        include_novel: bool = False,
+    ) -> list[dict[str, object]]:
         return [dict(item) for item in self._items]
 
     def resolve_mofox_order(self, payload: object = None) -> list[str]:

@@ -22,6 +22,77 @@ class RuleSection(SectionBase):
     description: str = Field(default="", description="规则说明")
 
 
+class NovelSection(SectionBase):
+    """小说分段自动注入配置。"""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "启用小说自动注入。\n"
+            "把小说放进 data/tavern_preset_regex/novel/，开启后每次主回复请求\n"
+            "自动注入当前段落并推进进度。"
+        ),
+    )
+    file: str = Field(
+        default="",
+        description=(
+            "当前小说文件名（novel/ 目录下的 .txt / .md）。\n"
+            "留空时自动使用目录里的第一个小说文件。"
+        ),
+    )
+    split_mode: Literal["auto", "chapter", "char", "line"] = Field(
+        default="auto",
+        description=(
+            "分段方式：auto 自动识别章节标题（识别不到按字数）、chapter 只按章节、\n"
+            "char 按字数、line 按行数。"
+        ),
+        choices=["auto", "chapter", "char", "line"],
+    )
+    char_size: int = Field(
+        default=10000,
+        description="按字数分段时每段字数",
+    )
+    lines_per_segment: int = Field(
+        default=60,
+        description="按行数分段时每段行数",
+    )
+    chapter_pattern: str = Field(
+        default="",
+        description=(
+            "自定义章节标题正则（可留空）。\n"
+            "留空时使用内置识别：第X章/回/卷、序章/楔子/番外、数字序号、中文序号。"
+        ),
+    )
+    batch_size: int = Field(
+        default=1,
+        description="每次注入段数，填 3 就把 3 段拼在一起注入并一次跳 3 段",
+    )
+    loop: bool = Field(
+        default=False,
+        description="读到最后一段后，下一次从第一段重新开始",
+    )
+    variable_name: str = Field(
+        default="current_chapter",
+        description=(
+            "当前段落写入的变量名。\n"
+            "在预设里写 {{getvar::current_chapter}} 也能读到同样的内容。"
+        ),
+    )
+    role: Literal["system", "user", "assistant"] = Field(
+        default="system",
+        description="「📖小说当前段落」注入请求时使用的角色",
+        choices=["system", "user", "assistant"],
+    )
+    entry_enabled: bool = Field(
+        default=True,
+        description="是否在请求中注入「📖小说当前段落」条目（关闭后仍会写入变量）",
+    )
+    inject_when_empty: bool = Field(
+        default=False,
+        description="小说读完且未开启循环时，是否仍注入空的条目",
+    )
+
+
 class TavernRegexConfig(BaseConfig):
     """tavern_preset_regex 插件配置模型。"""
 
@@ -98,3 +169,4 @@ class TavernRegexConfig(BaseConfig):
         )
 
     plugin: PluginSection = Field(default_factory=PluginSection)
+    novel: NovelSection = Field(default_factory=NovelSection)

@@ -1,0 +1,350 @@
+"""小说分段注入的回归测试。
+
+运行方式（使用 neo-mofox 的虚拟环境）：
+
+    D:\\Neo-MoFox_Bots\\myplugins\\neo-mofox\\.venv\\Scripts\\python.exe -m pytest tests
+"""
+
+# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入 neo-mofox 与插件模块
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN_ROOT.parent))
+
+NEO_MOFOX = Path("D:/Neo-MoFox_Bots/myplugins/neo-mofox")
+if NEO_MOFOX.is_dir():
+    sys.path.insert(0, str(NEO_MOFOX))
+
+from src.kernel.llm import LLMPayload, ROLE, Text
+
+event_handler = importlib.import_module("tavern_preset_regex.event_handler")
+config_module = importlib.import_module("tavern_preset_regex.config")
+novel_module = importlib.import_module("tavern_preset_regex.novel_store")
+tavern_store = importlib.import_module("tavern_preset_regex.tavern_store")
+
+NovelService = novel_module.NovelService
+split_novel = novel_module.split_novel
+detect_chapter_format = novel_module.detect_chapter_format
+TavernDataService = tavern_store.TavernDataService
+TavernRegexConfig = config_module.TavernRegexConfig
+NovelSection = config_module.NovelSection
+TavernRequestHandler = event_handler.TavernRequestHandler
+
+NOVEL_TEXT = """第一章 初到小镇
+
+少年背着行囊走下车，站台的木牌被风吹得吱呀作响。
+
+第二章 旧书店
+
+书店的门铃响了一声，柜台后面没有人。
+
+第三章 雨夜
+
+雨点砸在铁皮屋顶上，整条街只剩下这一盏灯还亮着。
+"""
+
+PLAIN_TEXT = """第一段没有标题，只是一些普通文字。
+第二段继续写下去，用来测试按字数切分。
+第三段也还是普通文字。
+"""
+
+
+def write_novel(root: Path, text: str = NOVEL_TEXT, name: str = "demo.txt") -> Path:
+    novel_dir = root / "novel"
+    novel_dir.mkdir(parents=True, exist_ok=True)
+    path = novel_dir / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def make_service(root: Path, **novel_overrides) -> TavernDataService:
+    """构造使用临时目录的 TavernDataService。"""
+    config = TavernRegexConfig()
+    config.plugin.data_dir = str(root)
+    novel = NovelSection(**novel_overrides)
+    config.novel = novel
+    plugin = type("_FakePlugin", (), {"config": config})()
+    return TavernDataService(tavern_dir=root, plugin=plugin)
+
+
+# ----- 分段 -----
+
+
+def test_detect_chapter_format_finds_chinese_headings() -> None:
+    detected = detect_chapter_format(NOVEL_TEXT)
+    assert detected["mode"] == "chapter"
+    assert detected["count"] == 3
+
+
+def test_detect_chapter_format_falls_back_to_char() -> None:
+    assert detect_chapter_format(PLAIN_TEXT)["mode"] == "char"
+
+
+def test_split_by_chapter_keeps_titles() -> None:
+    result = split_novel(NOVEL_TEXT, mode="auto")
+    assert result["mode"] == "chapter"
+    assert len(result["segments"]) == 3
+    assert result["segments"][0].startswith("第一章")
+    assert "木牌" in result["segments"][0]
+
+
+def test_split_by_char_respects_size() -> None:
+    result = split_novel(NOVEL_TEXT, mode="char", char_size=20)
+    assert result["mode"] == "char"
+    assert all(len(item) <= 25 for item in result["segments"])
+    assert len(result["segments"]) > 1
+
+
+def test_split_by_line() -> None:
+    result = split_novel(NOVEL_TEXT, mode="line", lines_per_segment=2)
+    assert result["mode"] == "line"
+    # 原文每章之间有空行，2 行一段时标题与正文各成一段
+    assert len(result["segments"]) == 6
+    assert result["segments"][0] == "第一章 初到小镇"
+
+
+def test_split_auto_without_headings_uses_char() -> None:
+    result = split_novel(PLAIN_TEXT, mode="auto", char_size=30)
+    assert result["mode"] == "char"
+    assert result["segments"]
+
+
+def test_custom_chapter_pattern() -> None:
+    text = "# 一\n内容一\n# 二\n内容二\n"
+    result = split_novel(text, mode="chapter", chapter_pattern=r"^#")
+    assert result["mode"] == "chapter"
+    assert len(result["segments"]) == 2
+
+
+# ----- 进度 -----
+
+
+def test_progress_is_isolated_per_stream(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    service = NovelService(tmp_path / "novel")
+    segments = ["a", "b", "c"]
+
+    first = service.advance("demo.txt", segments, stream_id="s1")
+    assert first["content"] == "a"
+    assert service.get_index("demo.txt", "s1") == 1
+    assert service.get_index("demo.txt", "s2") == 0
+
+    second = service.advance("demo.txt", segments, stream_id="s2")
+    assert second["content"] == "a"
+    assert service.get_index("demo.txt", "s2") == 1
+
+
+def test_progress_batch_and_finished(tmp_path: Path) -> None:
+    service = NovelService(tmp_path / "novel")
+    segments = ["a", "b", "c"]
+
+    result = service.advance("demo.txt", segments, batch_size=2, stream_id="s")
+    assert result["content"] == "a\n\nb"
+    assert (result["start"], result["end"]) == (1, 2)
+    assert result["finished"] is False
+
+    result = service.advance("demo.txt", segments, batch_size=2, stream_id="s")
+    assert result["content"] == "c"
+    assert result["finished"] is True
+
+    stopped = service.advance("demo.txt", segments, stream_id="s")
+    assert stopped["content"] == ""
+    assert stopped["finished"] is True
+
+
+def test_progress_loop_wraps_around(tmp_path: Path) -> None:
+    service = NovelService(tmp_path / "novel")
+    segments = ["a", "b"]
+    service.set_index("demo.txt", 2, "s")
+
+    result = service.advance("demo.txt", segments, loop=True, stream_id="s")
+    assert result["content"] == "a"
+    assert result["looped"] is True
+
+
+def test_progress_persists_to_disk(tmp_path: Path) -> None:
+    service = NovelService(tmp_path / "novel")
+    service.set_index("demo.txt", 3, "s")
+    payload = json.loads((tmp_path / "novel" / "progress.json").read_text("utf-8"))
+    assert payload["novels"]["demo.txt"]["streams"]["s"] == 3
+
+
+def test_resolve_file_rejects_path_traversal(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    service = NovelService(tmp_path / "novel")
+    with pytest.raises(ValueError):
+        service.resolve_file("../setvar.json")
+
+
+# ----- 设置 -----
+
+
+def test_runtime_settings_override_toml(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=False, batch_size=1)
+    assert service.novel_settings()["enabled"] is False
+
+    service.save_novel_settings({"enabled": True, "batch_size": 3})
+    settings = service.novel_settings()
+    assert settings["enabled"] is True
+    assert settings["batch_size"] == 3
+
+
+def test_novel_state_reports_segments(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=True)
+    state = service.novel_state("stream-1")
+    assert state["active_file"] == "demo.txt"
+    assert state["total"] == 3
+    assert state["mode"] == "chapter"
+    assert state["segment_titles"][0].startswith("第一章")
+    assert state["index"] == 0
+
+
+def test_jump_and_reset(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=True)
+
+    result = service.jump_novel(2, "s")
+    assert result["content"].startswith("第二章")
+    assert service.novel_state("s")["index"] == 2
+
+    service.reset_novel("s")
+    assert service.novel_state("s")["index"] == 0
+
+
+# ----- 请求注入 -----
+
+
+def make_plugin(root: Path, **novel_overrides):
+    config = TavernRegexConfig()
+    config.plugin.data_dir = str(root)
+    config.plugin.main_request_names = ["neo_default_chatter"]
+    config.plugin.debug_log = False
+    config.novel = NovelSection(**novel_overrides)
+    return type("_FakePlugin", (), {"config": config})()
+
+
+def setvar_payload(order: list[str]) -> dict:
+    return {
+        "prompts": [
+            {
+                "identifier": "reader",
+                "name": "读小说变量",
+                "role": "user",
+                "content": "<novel>{{getvar::current_chapter}}</novel>",
+                "enabled": True,
+            }
+        ],
+        "prompt_order": [{"identifier": "reader", "enabled": True}],
+        "mofox_order": order,
+    }
+
+
+def run_request(plugin, stream_id: str) -> list[LLMPayload]:
+    handler = TavernRequestHandler(plugin)
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text("系统提示词")]),
+        LLMPayload(ROLE.TOOL, [Text("工具占位")]),
+        LLMPayload(ROLE.USER, [Text("用户输入")]),
+    ]
+    params = {
+        "request_name": "neo_default_chatter",
+        "payloads": payloads,
+        "meta_data": {"stream_id": stream_id},
+    }
+    asyncio.run(handler.execute("before_llm_request", params))
+    return params["payloads"]
+
+
+def text_of(payloads: list[LLMPayload]) -> str:
+    return "\n".join(
+        part.text
+        for payload in payloads
+        for part in payload.content
+        if isinstance(part, Text)
+    )
+
+
+def test_request_injects_novel_and_advances(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(
+                ["mofox_system", "reader", "novel_current", "mofox_tool", "mofox_user"]
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plugin = make_plugin(tmp_path, enabled=True, variable_name="current_chapter")
+
+    first = run_request(plugin, "s1")
+    joined = text_of(first)
+    assert "第一章" in joined
+    assert "<novel>第一章" in joined
+
+    second = run_request(plugin, "s1")
+    assert "第二章" in text_of(second)
+
+    # 另一条聊天流进度独立
+    other = run_request(plugin, "s2")
+    assert "第一章" in text_of(other)
+
+
+def test_request_skips_novel_when_disabled(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(["mofox_system", "reader", "novel_current", "mofox_user"]),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request(plugin, "s1")
+    joined = text_of(payloads)
+    assert "第一章" not in joined
+    assert "<novel></novel>" in joined
+
+
+def test_request_entry_disabled_still_seeds_variable(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(["mofox_system", "reader", "novel_current", "mofox_user"]),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plugin = make_plugin(tmp_path, enabled=True, entry_enabled=False)
+    joined = text_of(run_request(plugin, "s1"))
+    # 条目本身不注入，但变量仍然被填充
+    assert "<novel>第一章" in joined
+    assert joined.count("第一章") == 1
+
+
+def test_request_respects_custom_variable_name(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(["mofox_system", "reader", "novel_current", "mofox_user"]),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plugin = make_plugin(tmp_path, enabled=True, variable_name="my_chapter")
+    # reader 读的是 current_chapter，此时应该读不到内容
+    joined = text_of(run_request(plugin, "s1"))
+    assert "<novel></novel>" in joined
+    # 但小说条目自身仍然注入
+    assert "第一章" in joined

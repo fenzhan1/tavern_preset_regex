@@ -1,8 +1,8 @@
 {
     "name": "tavern_preset_regex",
-    "display_name": "酒馆 Setvar 与 Regex",
-    "version": "2.3.1",
-    "description": "直接读写 data/tavern_preset_regex 的 setvar 与 regex，并仅作用于发送给主回复模型的请求与结果。",
+    "display_name": "酒馆 Setvar / Regex / 小说注入",
+    "version": "2.4.0",
+    "description": "直接读写 data/tavern_preset_regex 的 setvar、regex 与 novel 小说分段，并仅作用于发送给主回复模型的请求与结果。",
     "author": "MoFox Team",
     "license": "AGPL-3.0",
     "categories": [
@@ -11,6 +11,7 @@
     "tags": [
         "regex",
         "setvar",
+        "novel",
         "text-processing",
         "sillytavern"
     ],
@@ -37,6 +38,11 @@
         {
             "component_type": "command",
             "component_name": "regex",
+            "dependencies": []
+        },
+        {
+            "component_type": "command",
+            "component_name": "novel",
             "dependencies": []
         },
         {

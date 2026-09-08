@@ -29,9 +29,50 @@ class ImportJsonPayload(BaseModel):
     content: str = Field(default="", description="JSON 文件内容")
 
 
+class NovelConfigPayload(BaseModel):
+    enabled: bool | None = Field(default=None, description="启用小说自动注入")
+    file: str | None = Field(default=None, description="当前小说文件名")
+    split_mode: str | None = Field(default=None, description="auto/chapter/char/line")
+    char_size: int | None = Field(default=None, description="按字数分段的每段字数")
+    lines_per_segment: int | None = Field(default=None, description="按行数分段的每段行数")
+    chapter_pattern: str | None = Field(default=None, description="自定义章节正则")
+    batch_size: int | None = Field(default=None, description="每次注入段数")
+    loop: bool | None = Field(default=None, description="读完是否循环")
+    variable_name: str | None = Field(default=None, description="当前段落写入的变量名")
+    role: str | None = Field(default=None, description="注入条目角色")
+    entry_enabled: bool | None = Field(default=None, description="是否注入小说条目")
+    inject_when_empty: bool | None = Field(default=None, description="读完是否仍注入空条目")
+
+
+class NovelJumpPayload(BaseModel):
+    index: int = Field(default=1, description="跳转到的段号（1 起始）")
+    stream_id: str = Field(default="", description="聊天流 ID，用于隔离进度")
+
+
+def _novel_public_state(state: dict[str, Any]) -> dict[str, Any]:
+    """裁掉完整正文，只保留 WebUI 需要的元信息与预览。"""
+    segments: list[str] = list(state.get("segments") or [])
+    index = int(state.get("index") or 0)
+    preview = segments[index] if 0 <= index < len(segments) else ""
+    return {
+        "dir": state.get("dir", ""),
+        "files": state.get("files", []),
+        "active_file": state.get("active_file", ""),
+        "config": state.get("config", {}),
+        "total": state.get("total", 0),
+        "index": index,
+        "mode": state.get("mode", ""),
+        "label": state.get("label", ""),
+        "chars": state.get("chars", 0),
+        "segment_titles": state.get("segment_titles", []),
+        "segment_chars": state.get("segment_chars", []),
+        "preview": preview[:2000],
+        "error": state.get("error", ""),
+    }
+
+
 class TavernRegexAdminRouter(BaseRouter):
     """酒馆预设与正则编辑页。"""
-
     name: str = "tavern_preset_regex_webui"
     description: str = "tavern_preset_regex 预设与正则编辑后台"
     custom_route_path: str = "/plugins/tavern-preset-regex"
@@ -58,12 +99,64 @@ class TavernRegexAdminRouter(BaseRouter):
                 "preset_items": service.list_ordered_prompt_items(),
                 "fixed_prompts": service.fixed_prompt_items(),
                 "regexes": service.list_regex_items(),
+                "novel": _novel_public_state(service.novel_state()),
                 "paths": {
                     "tavern_dir": str(service.tavern_dir),
                     "setvar_path": str(service.setvar_path),
                     "regex_path": str(service.regex_path),
+                    "novel_dir": str(service.novel_dir),
                 },
             }
+
+        @self.app.get("/api/novel")
+        async def get_novel(stream_id: str = "") -> dict[str, Any]:
+            state = self._service().novel_state(stream_id)
+            return {"ok": True, **_novel_public_state(state)}
+
+        @self.app.put("/api/novel")
+        async def save_novel(payload: NovelConfigPayload) -> dict[str, Any]:
+            service = self._service()
+            updates = payload.model_dump(exclude_none=True)
+            try:
+                service.save_novel_settings(updates)
+            except Exception as exc:
+                logger.warning(f"保存小说设置失败: {exc}")
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, **_novel_public_state(service.novel_state())}
+
+        @self.app.post("/api/novel/next")
+        async def novel_next(payload: NovelJumpPayload) -> dict[str, Any]:
+            service = self._service()
+            try:
+                result = service.advance_novel(payload.stream_id)
+            except Exception as exc:
+                logger.warning(f"推进小说失败: {exc}")
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, "result": result, **_novel_public_state(
+                service.novel_state(payload.stream_id)
+            )}
+
+        @self.app.post("/api/novel/jump")
+        async def novel_jump(payload: NovelJumpPayload) -> dict[str, Any]:
+            service = self._service()
+            try:
+                result = service.jump_novel(payload.index, payload.stream_id)
+            except Exception as exc:
+                logger.warning(f"跳转小说失败: {exc}")
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, "result": result, **_novel_public_state(
+                service.novel_state(payload.stream_id)
+            )}
+
+        @self.app.post("/api/novel/reset")
+        async def novel_reset(payload: NovelJumpPayload) -> dict[str, Any]:
+            service = self._service()
+            try:
+                service.reset_novel(payload.stream_id)
+            except Exception as exc:
+                logger.warning(f"重置小说进度失败: {exc}")
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, **_novel_public_state(service.novel_state(payload.stream_id))}
 
         @self.app.put("/api/setvar")
         async def save_setvar(payload: SetvarItemsPayload) -> dict[str, Any]:

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from src.app.plugin_system.base import BasePlugin, register_plugin
 
-from .commands.tavern_commands import TavernRegexCommand, TavernSetvarCommand
+from .commands.tavern_commands import (
+    TavernNovelCommand,
+    TavernRegexCommand,
+    TavernSetvarCommand,
+)
 from .config import TavernRegexConfig
 from .event_handler import TavernRequestHandler, TavernResponseHandler
 from .router import TavernRegexAdminRouter
@@ -16,10 +20,10 @@ class TavernRegexPlugin(BasePlugin):
 
     plugin_name: str = "tavern_preset_regex"
     plugin_description: str = (
-        "直接读写 data/tavern_preset_regex 的 setvar 与 regex，"
+        "直接读写 data/tavern_preset_regex 的 setvar、regex 与 novel，"
         "仅作用于发送给主回复模型的请求与结果"
     )
-    plugin_version: str = "2.3.1"
+    plugin_version: str = "2.4.0"
 
     configs: list[type] = [TavernRegexConfig]
 
@@ -41,5 +45,6 @@ class TavernRegexPlugin(BasePlugin):
             TavernResponseHandler,
             TavernSetvarCommand,
             TavernRegexCommand,
+            TavernNovelCommand,
             TavernRegexAdminRouter,
         ]
