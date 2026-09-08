@@ -50,4 +50,3 @@ def apply_rules(text: str, rules: list[RuleSection], target: str) -> str:
             continue
 
     return current
-

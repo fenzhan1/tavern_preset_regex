@@ -8,7 +8,7 @@ from typing import Any
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.stream_api import get_stream_info
 from src.app.plugin_system.base import BaseEventHandler
-from src.app.plugin_system.types import LLMPayload, ROLE, Text, ToolCall
+from src.app.plugin_system.types import ROLE, LLMPayload, Text, ToolCall
 from src.core.components.types import EventType
 from src.kernel.event import EventDecision
 
@@ -72,7 +72,9 @@ async def _is_allowed_stream(config: TavernRegexConfig, params: dict[str, Any]) 
         return True
 
     meta_data = params.get("meta_data")
-    stream_id = str(meta_data.get("stream_id", "") or "") if isinstance(meta_data, dict) else ""
+    stream_id = (
+        str(meta_data.get("stream_id", "") or "") if isinstance(meta_data, dict) else ""
+    )
     if not stream_id:
         return True
 
@@ -90,8 +92,12 @@ async def _is_allowed_stream(config: TavernRegexConfig, params: dict[str, Any]) 
     else:
         chat_id = str(stream_info.get("person_id") or "")
 
-    user_specs = list(config.plugin.user_whitelist) + list(config.plugin.group_whitelist)
-    user_excludes = list(config.plugin.user_blacklist) + list(config.plugin.group_blacklist)
+    user_specs = list(config.plugin.user_whitelist) + list(
+        config.plugin.group_whitelist
+    )
+    user_excludes = list(config.plugin.user_blacklist) + list(
+        config.plugin.group_blacklist
+    )
 
     if mode == "whitelist":
         if not user_specs:
@@ -218,13 +224,66 @@ def _contains_setvar_marker(payloads: list[Any]) -> bool:
     )
 
 
+def _tavern_role_to_role(raw_role: Any) -> ROLE:
+    """把酒馆预设条目声明的角色映射成 MoFox 的 LLM 角色。"""
+    name = str(raw_role or "").strip().lower()
+    if name == "user":
+        return ROLE.USER
+    if name == "assistant":
+        return ROLE.ASSISTANT
+    return ROLE.SYSTEM
+
+
+def _build_setvar_payload(role: ROLE, content: Any) -> LLMPayload:
+    """构造一条带 setvar 标记的酒馆预设 payload。"""
+    return LLMPayload(role, [Text(f"{_SETVAR_MARKER}\n{content}")])
+
+
+def _demote_invalid_assistant_payloads(
+    payloads: list[Any],
+    names: dict[int, str] | None = None,
+) -> list[str]:
+    """把结构上不合法的 assistant 条目降级为 system，并返回被降级的条目名。
+
+    MoFox 的上下文校验要求 assistant 不能出现在对话开头，也不能紧跟在另一条
+    assistant 之后。用户可以把酒馆预设条目排到任意位置，因此这里做一次兜底，
+    保证注入后的 payload 序列仍然能被主回复请求接受。
+    """
+    demoted: list[str] = []
+    previous_convo_role = ""
+    names = names or {}
+
+    for index, payload in enumerate(payloads):
+        role = str(getattr(payload, "role", ""))
+        if role == str(ROLE.ASSISTANT):
+            if previous_convo_role not in (str(ROLE.USER), str(ROLE.TOOL_RESULT)):
+                content = getattr(payload, "content", None)
+                if isinstance(content, list):
+                    payloads[index] = LLMPayload(ROLE.SYSTEM, content)
+                else:
+                    payloads[index] = LLMPayload(ROLE.SYSTEM, [Text(str(content))])
+                demoted.append(names.get(index, f"#{index}"))
+                continue
+            previous_convo_role = role
+            continue
+
+        # system / tool 不参与对话结构校验，不更新前置角色。
+        if role in (str(ROLE.USER), str(ROLE.TOOL_RESULT)):
+            previous_convo_role = role
+
+    return demoted
+
+
 def _inject_ordered_setvar_payloads(
     payloads: list[Any],
     service: Any,
-) -> None:
-    """按 WebUI 的统一顺序重组三个固定块和酒馆预设条目。"""
+) -> list[str]:
+    """按 WebUI 的统一顺序重组三个固定块和酒馆预设条目。
+
+    返回被降级为 system 的 assistant 条目名称列表，便于调用方记录日志。
+    """
     if _contains_setvar_marker(payloads):
-        return
+        return []
 
     rendered_items = service.render_setvar_payloads()
     order_ids = service.resolve_mofox_order(service.load_setvar_payload())
@@ -235,6 +294,17 @@ def _inject_ordered_setvar_payloads(
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
     output: list[Any] = []
     used: set[str] = set()
+    preset_names: dict[int, str] = {}
+
+    def append_preset(identifier: str, item: dict[str, Any]) -> None:
+        preset_names[len(output)] = str(item.get("name", "") or identifier)
+        output.append(
+            _build_setvar_payload(
+                _tavern_role_to_role(item.get("role")),
+                item.get("content", ""),
+            )
+        )
+        used.add(identifier)
 
     for identifier in order_ids:
         if identifier == "mofox_system":
@@ -253,25 +323,12 @@ def _inject_ordered_setvar_payloads(
         item = by_identifier.get(identifier)
         if item is None:
             continue
-        role = ROLE.USER if str(item.get("role", "")) == "user" else ROLE.SYSTEM
-        output.append(
-            LLMPayload(
-                role,
-                [Text(f"{_SETVAR_MARKER}\n{item.get('content', '')}")],
-            )
-        )
-        used.add(identifier)
+        append_preset(identifier, item)
 
     for item in rendered_items:
         identifier = str(item.get("identifier", "") or "")
         if identifier and identifier not in used:
-            role = ROLE.USER if str(item.get("role", "")) == "user" else ROLE.SYSTEM
-            output.append(
-                LLMPayload(
-                    role,
-                    [Text(f"{_SETVAR_MARKER}\n{item.get('content', '')}")],
-                )
-            )
+            append_preset(identifier, item)
 
     if "mofox_system" not in used:
         output.extend(system_block)
@@ -281,6 +338,7 @@ def _inject_ordered_setvar_payloads(
         output.extend(convo_block)
 
     payloads[:] = output
+    return _demote_invalid_assistant_payloads(payloads, preset_names)
 
 
 class TavernRequestHandler(BaseEventHandler):
@@ -309,12 +367,18 @@ class TavernRequestHandler(BaseEventHandler):
         if not isinstance(payloads, list):
             return EventDecision.SUCCESS, params
 
+        demoted: list[str] = []
         if config.plugin.inject_setvar:
             service = TavernDataService(plugin=self.plugin)
             if hasattr(service, "render_setvar_payloads") and hasattr(
                 service, "resolve_mofox_order"
             ):
-                _inject_ordered_setvar_payloads(payloads, service)
+                demoted = _inject_ordered_setvar_payloads(payloads, service)
+                if demoted and config.plugin.debug_log:
+                    logger.info(
+                        "以下 assistant 预设条目因顺序非法被降级为 system：%s",
+                        ", ".join(demoted),
+                    )
             else:
                 _inject_setvar_payload_legacy(
                     payloads,
@@ -327,9 +391,10 @@ class TavernRequestHandler(BaseEventHandler):
 
         if config.plugin.debug_log:
             logger.info(
-                "主回复模型请求已处理：request_name=%s payloads=%d",
+                "主回复模型请求已处理：request_name=%s payloads=%d roles=%s",
                 params.get("request_name"),
                 len(payloads),
+                ",".join(str(getattr(payload, "role", "")) for payload in payloads),
             )
 
         return EventDecision.SUCCESS, params

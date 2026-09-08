@@ -33,7 +33,9 @@ class TavernSetvarCommand(BaseCommand):
     """读取、编辑并注入 data/tavern_preset_regex/setvar.json。"""
 
     name: str = "setvar"
-    description: str = "管理 data/tavern_preset_regex/setvar.json 并注入 SillyTavern 变量预设"
+    description: str = (
+        "管理 data/tavern_preset_regex/setvar.json 并注入 SillyTavern 变量预设"
+    )
     permission_level: PermissionLevel = PermissionLevel.OWNER
 
     _USAGE = """/setvar 用法：
@@ -55,6 +57,10 @@ class TavernSetvarCommand(BaseCommand):
 
     def _service(self) -> TavernDataService:
         return TavernDataService(plugin=self.plugin)
+
+    async def execute(self, message_text: str) -> tuple[bool, str]:
+        """显式桥接到 BaseCommand 的 Trie 路由执行。"""
+        return await super().execute(message_text)
 
     async def _reply(self, text: str) -> None:
         await send_text(text, stream_id=self.stream_id)
@@ -201,6 +207,10 @@ class TavernRegexCommand(BaseCommand):
     def _service(self) -> TavernDataService:
         return TavernDataService(plugin=self.plugin)
 
+    async def execute(self, message_text: str) -> tuple[bool, str]:
+        """显式桥接到 BaseCommand 的 Trie 路由执行。"""
+        return await super().execute(message_text)
+
     async def _reply(self, text: str) -> None:
         await send_text(text, stream_id=self.stream_id)
 
@@ -288,7 +298,12 @@ class TavernRegexCommand(BaseCommand):
                 entry = self._service().update_regex_entry(key, scriptName=value)
             elif normalized in ("pattern", "find", "findregex", "find_regex"):
                 entry = self._service().update_regex_entry(key, findRegex=value)
-            elif normalized in ("replacement", "replace", "replacestring", "replace_string"):
+            elif normalized in (
+                "replacement",
+                "replace",
+                "replacestring",
+                "replace_string",
+            ):
                 entry = self._service().update_regex_entry(key, replaceString=value)
             elif normalized in ("markdown", "markdownonly"):
                 entry = self._service().update_regex_entry(

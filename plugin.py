@@ -19,7 +19,7 @@ class TavernRegexPlugin(BasePlugin):
         "直接读写 data/tavern_preset_regex 的 setvar 与 regex，"
         "仅作用于发送给主回复模型的请求与结果"
     )
-    plugin_version: str = "2.1.0"
+    plugin_version: str = "2.3.1"
 
     configs: list[type] = [TavernRegexConfig]
 

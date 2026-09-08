@@ -1,12 +1,12 @@
 {
     "name": "tavern_preset_regex",
     "display_name": "酒馆 Setvar 与 Regex",
-    "version": "2.1.0",
+    "version": "2.3.1",
     "description": "直接读写 data/tavern_preset_regex 的 setvar 与 regex，并仅作用于发送给主回复模型的请求与结果。",
     "author": "MoFox Team",
     "license": "AGPL-3.0",
     "categories": [
-        "utility"
+        "tool"
     ],
     "tags": [
         "regex",

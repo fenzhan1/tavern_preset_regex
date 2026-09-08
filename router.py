@@ -9,7 +9,6 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base.router import BaseRouter
 

@@ -73,9 +73,7 @@ class TavernRegexConfig(BaseConfig):
         )
         user_blacklist: list[str] = Field(
             default_factory=list,
-            description=(
-                "用户黑名单；命中后跳过。格式同 user_whitelist。"
-            ),
+            description=("用户黑名单；命中后跳过。格式同 user_whitelist。"),
             input_type="list",
             item_type="str",
         )
@@ -90,9 +88,7 @@ class TavernRegexConfig(BaseConfig):
         )
         group_blacklist: list[str] = Field(
             default_factory=list,
-            description=(
-                "群聊黑名单；命中后跳过。格式同 group_whitelist。"
-            ),
+            description=("群聊黑名单；命中后跳过。格式同 group_whitelist。"),
             input_type="list",
             item_type="str",
         )

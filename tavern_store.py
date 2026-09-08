@@ -292,9 +292,7 @@ def _first_order_entries(payload: dict[str, Any]) -> list[tuple[str, bool]]:
 
 def _canonical_prompt_sequence(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """按 prompt_order 排列出全部提示词，未收录的按原数组顺序追加。"""
-    prompts = [
-        item for item in payload.get("prompts", []) if isinstance(item, dict)
-    ]
+    prompts = [item for item in payload.get("prompts", []) if isinstance(item, dict)]
 
     prompt_by_id: dict[str, dict[str, Any]] = {}
     for prompt in prompts:
@@ -324,9 +322,7 @@ def _sort_prompts_by_order(
     order_enabled: dict[str, bool],
 ) -> list[dict[str, Any]]:
     """按 prompt_order 的先后排列提示词，未收录的保持原顺序追加在后。"""
-    position = {
-        identifier: index for index, identifier in enumerate(order_enabled)
-    }
+    position = {identifier: index for index, identifier in enumerate(order_enabled)}
     ranked = sorted(
         (
             (
@@ -589,7 +585,9 @@ class TavernDataService:
     def save_mofox_order(self, order: list[str]) -> None:
         """仅保存统一顺序，不改动 prompts 内容。"""
         payload = self.load_setvar_payload()
-        payload["mofox_order"] = [str(item).strip() for item in order if str(item).strip()]
+        payload["mofox_order"] = [
+            str(item).strip() for item in order if str(item).strip()
+        ]
         self.save_setvar_payload(payload)
 
     @staticmethod
@@ -898,7 +896,9 @@ class TavernDataService:
         payload = self.load_setvar_payload()
         setvar_items = self.list_setvar_items()
         by_identifier = {
-            str(item["identifier"]): item for item in setvar_items if item.get("identifier")
+            str(item["identifier"]): item
+            for item in setvar_items
+            if item.get("identifier")
         }
         fixed_items = {
             str(item["identifier"]): item for item in self.fixed_prompt_items()
@@ -1026,7 +1026,9 @@ class TavernDataService:
     def import_regex_entries(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
         """按 id 合并导入正则条目。"""
         current = self.load_regex_entries()
-        by_id = {str(entry.get("id", "")): entry for entry in current if entry.get("id")}
+        by_id = {
+            str(entry.get("id", "")): entry for entry in current if entry.get("id")
+        }
         imported = 0
 
         for raw_entry in entries:
@@ -1066,7 +1068,9 @@ class TavernDataService:
 
         current_payload = self.load_setvar_payload()
         current_prompts = [
-            item for item in current_payload.get("prompts", []) if isinstance(item, dict)
+            item
+            for item in current_payload.get("prompts", [])
+            if isinstance(item, dict)
         ]
         current_sequence = _canonical_prompt_sequence(current_payload)
         by_identifier = {
@@ -1084,7 +1088,10 @@ class TavernDataService:
             if not isinstance(raw_prompt, dict):
                 continue
             identifier = str(raw_prompt.get("identifier", "") or "")
-            if bool(raw_prompt.get("marker", False)) or identifier in _MARKER_IDENTIFIERS:
+            if (
+                bool(raw_prompt.get("marker", False))
+                or identifier in _MARKER_IDENTIFIERS
+            ):
                 skipped_markers += 1
                 if identifier:
                     marker_ids.add(identifier)
@@ -1228,9 +1235,7 @@ class TavernDataService:
             setvar_result = self.import_setvar_preset(preset_payload)
             results["setvar_count"] = setvar_result["count"]
             results["setvar_total"] = setvar_result["total"]
-            results["setvar_skipped_markers"] = setvar_result.get(
-                "skipped_markers", 0
-            )
+            results["setvar_skipped_markers"] = setvar_result.get("skipped_markers", 0)
             results["setvar_disabled_defaults"] = setvar_result.get(
                 "disabled_defaults", 0
             )
