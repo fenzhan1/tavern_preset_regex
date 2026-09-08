@@ -778,6 +778,83 @@ def prepare_conversation_fixture(tmp_path: Path) -> None:
     )
 
 
+def test_followup_request_is_reordered_idempotently(tmp_path: Path) -> None:
+    """工具调用后的二次请求（payload 里已带注入预设）仍要按顺序表重排。
+
+    这是线上真正踩到的坑：``_contains_setvar_marker`` 一旦为真就直接返回，
+    于是二次请求完全不重排，「上轮回复 + 工具结果 + 新输入」被挤在预设后面，
+    预填充永远落不到末尾。
+    """
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    data["mofox_order"] = [
+        "mofox_system",
+        "mofox_user",
+        NEW_INPUT_ENTRY_ID,
+        "prefill",
+        "tail",
+        "mofox_tool",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    marker = "<!-- tavern_setvar -->"
+    # 二次请求：预设已经在 payload 里，且带 tool_call 的 assistant 也带着标记
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text(f"{marker}\n</clear> 预设一")]),
+        LLMPayload(ROLE.USER, [Text(f"{marker}\n角色引导 预设二")]),
+        LLMPayload(ROLE.SYSTEM, [Text("MoFox系统提示词")]),
+        LLMPayload(ROLE.USER, [Text("历史：conversation_context")]),
+        LLMPayload(
+            ROLE.ASSISTANT,
+            [
+                Text(f"{marker}\n明白了。"),
+                ToolCall("call_1", "action-send_text", {"content": "hi"}),
+            ],
+        ),
+        LLMPayload(ROLE.TOOL_RESULT, [ToolResult({"status": "已发送消息"}, "call_1")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("__SUSPEND__")]),
+        LLMPayload(ROLE.USER, [Text("本轮新输入")]),
+    ]
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    result = run_request_with(plugin, payloads)
+    texts = [
+        "".join(
+            part.text if isinstance(part, Text) else str(getattr(part, "value", part))
+            for part in payload.content
+        )
+        for payload in result
+    ]
+    index_of = lambda needle: next(  # noqa: E731
+        index for index, text in enumerate(texts) if needle in text
+    )
+
+    # 历史 → 回复 → 工具结果 → 收尾 → 新输入 → 预填充
+    assert (
+        index_of("历史：conversation_context")
+        < index_of("明白了。")
+        < index_of("已发送消息")
+    ), f"回复/工具结果没有紧跟历史：{texts}"
+    assert index_of("已发送消息") < index_of("__SUSPEND__") < index_of("本轮新输入")
+    assert index_of("本轮新输入") < index_of("然后直接开始输出"), (
+        f"预填充没排到新输入之后：{texts}"
+    )
+    # 预设没有被重复注入
+    assert sum("然后直接开始输出" in text for text in texts) == 1, f"预设重复：{texts}"
+
+    # 工具调用与工具结果仍然成对、顺序不变
+    roles = [str(payload.role) for payload in result]
+    tool_call_index = next(
+        index
+        for index, payload in enumerate(result)
+        if any(isinstance(part, ToolCall) for part in payload.content)
+    )
+    assert roles[tool_call_index + 1] == str(ROLE.TOOL_RESULT), f"工具调用被拆散：{roles}"
+
+
 def test_missing_mofox_order_keeps_history_before_presets(tmp_path: Path) -> None:
     """setvar.json 没有 mofox_order 时，历史不能被排到预设后面。
 

@@ -266,12 +266,16 @@ def _split_mofox_payloads(
     return system_block, function_block, convo_block
 
 
-def _contains_setvar_marker(payloads: list[Any]) -> bool:
+def _has_setvar_marker(payload: Any) -> bool:
+    """判断单条 payload 是否带着本插件注入预设时打的标记。"""
     return any(
         isinstance(item, Text) and _SETVAR_MARKER in item.text
-        for payload in payloads
         for item in getattr(payload, "content", []) or []
     )
+
+
+def _contains_setvar_marker(payloads: list[Any]) -> bool:
+    return any(_has_setvar_marker(payload) for payload in payloads)
 
 
 def _tavern_role_to_role(raw_role: Any) -> ROLE:
@@ -448,6 +452,41 @@ def _split_before_last_user(
     )
 
 
+def _strip_setvar_marker(payload: Any) -> str:
+    """取出一条已注入预设 payload 的原始内容（去掉标记前缀）。"""
+    for part in getattr(payload, "content", []) or []:
+        if isinstance(part, Text) and _SETVAR_MARKER in part.text:
+            text = part.text
+            index = text.find(_SETVAR_MARKER)
+            return text[index + len(_SETVAR_MARKER) :].lstrip("\n")
+    return ""
+
+
+def _split_injected_presets(
+    convo_block: list[Any],
+) -> tuple[list[Any], list[tuple[str, Any]]]:
+    """把「已经注入过预设」的对话块拆成纯对话部分与预设部分。
+
+    工具调用后的二次请求里，上一轮注入的预设条目仍然留在 payload 里。这时
+    不能重复注入，但**仍然要按顺序表重排**，否则上轮回复与工具结果会被挤在
+    预设后面、预填充也就落不到末尾。
+
+    只有「纯文本 + 带标记」的 payload 才算已注入预设：带工具调用/工具结果的
+    payload 属于真实对话（例如带 tool_call 的 assistant 回复），必须留在
+    对话块里，否则工具调用与工具结果会被拆散。
+
+    返回 ``(纯对话 payload 列表, [(内容, payload), ...])``。
+    """
+    convo: list[Any] = []
+    presets: list[tuple[str, Any]] = []
+    for payload in convo_block:
+        if _has_setvar_marker(payload) and not _has_tool_content(payload):
+            presets.append((_strip_setvar_marker(payload), payload))
+        else:
+            convo.append(payload)
+    return convo, presets
+
+
 def _inject_ordered_setvar_payloads(
     payloads: list[Any],
     service: Any,
@@ -461,10 +500,11 @@ def _inject_ordered_setvar_payloads(
     取得），其内容会作为 ``{{getvar::变量名}}`` 的取值参与渲染。
 
     返回被降级为 system 的 assistant 条目名称列表，便于调用方记录日志。
-    """
-    if _contains_setvar_marker(payloads):
-        return []
 
+    本函数是**幂等**的：如果 payload 里已经带着上次注入的 ``setvar`` 标记
+    （工具调用后的二次请求就是这样），就只按顺序表重排已有条目，不再重复
+    注入。否则先渲染并注入新条目，再重排。
+    """
     settings: dict[str, Any] = {}
     if hasattr(service, "novel_settings"):
         try:
@@ -497,6 +537,13 @@ def _inject_ordered_setvar_payloads(
     }
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
+    # 二次请求：对话块里混着上一轮注入的预设，先剥掉它们（带工具调用的除外）。
+    convo_block, injected = _split_injected_presets(convo_block)
+    # 内容 → 已注入的预设 payload，按顺序消费，避免同名内容互相顶掉。
+    injected_by_content: dict[str, list[Any]] = {}
+    for content_text, payload in injected:
+        injected_by_content.setdefault(content_text, []).append(payload)
+
     # 对话块拆成三段，各自按顺序表里的位置插入：
     #   mofox_user      → 历史（此前发生的事情 + 上轮回复 + 工具调用 + 工具结果）
     #   mofox_new_input → 本轮新输入
@@ -511,13 +558,18 @@ def _inject_ordered_setvar_payloads(
     history_at: int | None = None
 
     def append_preset(identifier: str, item: dict[str, Any]) -> None:
+        content_text = str(item.get("content", ""))
         preset_names[len(output)] = str(item.get("name", "") or identifier)
-        output.append(
-            _build_setvar_payload(
-                _tavern_role_to_role(item.get("role")),
-                item.get("content", ""),
+        pending = injected_by_content.get(content_text)
+        if pending:
+            output.append(pending.pop(0))
+        else:
+            output.append(
+                _build_setvar_payload(
+                    _tavern_role_to_role(item.get("role")),
+                    content_text,
+                )
             )
-        )
         used.add(identifier)
 
     for identifier in order_ids:
