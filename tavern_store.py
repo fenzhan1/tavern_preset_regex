@@ -16,6 +16,8 @@ from src.core.config import get_core_config
 from .config import RuleSection, TavernRegexConfig
 from .novel_store import (
     BLOCK_RUNTIME_KEYS,
+    NEW_INPUT_ENTRY_ID,
+    NEW_INPUT_ENTRY_NAME,
     NOVEL_ENTRY_CONTENT,
     NOVEL_ENTRY_ID,
     NOVEL_ENTRY_NAME,
@@ -91,8 +93,9 @@ _MOFOX_REDUNDANT_IDENTIFIERS = frozenset(("main", "nsfw"))
 # MoFox 主回复请求里永远存在的三块固定内容。
 _MOFOX_FIXED_PROMPT_IDS = ("mofox_system", "mofox_tool", "mofox_user")
 
-# 只读条目的完整顺序：三块固定内容 + 一条「📖小说当前段落」动态条目。
-# 它们在 WebUI 中作为只读条目展示，只允许调整相对顺序，不允许编辑名称、角色或内容。
+# 只读条目的完整顺序：三块固定内容 + 小说动态条目。
+# 「🆕本轮新输入」是可选条目：它出现在 mofox_order 里时才把对话块拆开，
+# 因此这里不列入默认补齐列表，由 WebUI 拖拽决定。
 _MOFOX_FIXED_ORDER_IDS = (
     "mofox_system",
     "mofox_tool",
@@ -613,14 +616,34 @@ class TavernDataService:
             "novel": True,
         }
 
+    def new_input_prompt_item(self) -> dict[str, Any]:
+        """返回「🆕本轮新输入」虚拟条目。
+
+        它代表对话块里最后一条 user 消息（本轮新收到的内容），单独拆出来是为了
+        让它在顺序表里可以像系统提示词、用户上下文一样拖动位置。
+        """
+        return {
+            "identifier": NEW_INPUT_ENTRY_ID,
+            "name": NEW_INPUT_ENTRY_NAME,
+            "role": "user",
+            "content": "由 MoFox 本轮新消息自动构建，不可编辑。",
+            "enabled": True,
+            "fixed": True,
+            "virtual": True,
+        }
+
     def readonly_prompt_items(self) -> list[dict[str, Any]]:
-        """返回所有只读条目：三条 MoFox 固定块 + 小说动态条目。"""
-        return [*self.fixed_prompt_items(), self.novel_prompt_item()]
+        """返回所有只读条目：固定块 + 本轮新输入 + 小说动态条目。"""
+        return [
+            *self.fixed_prompt_items(),
+            self.new_input_prompt_item(),
+            self.novel_prompt_item(),
+        ]
 
     @staticmethod
     def _readonly_identifiers() -> set[str]:
         """只读条目的 identifier 集合，用于保存时过滤。"""
-        return {*_MOFOX_FIXED_ORDER_IDS}
+        return {*_MOFOX_FIXED_ORDER_IDS, NEW_INPUT_ENTRY_ID}
 
     @staticmethod
     def _prompt_identifiers(payload: dict[str, Any]) -> list[str]:
@@ -923,6 +946,9 @@ class TavernDataService:
         extras = [self.novel_prompt_item()] if include_novel else None
 
         for prompt in _ordered_enabled_prompts(payload, extras):
+            # 「本轮新输入」由请求组装阶段插入真实内容，这里跳过。
+            if str(prompt.get("identifier", "") or "") == NEW_INPUT_ENTRY_ID:
+                continue
             content = _render_tavern_macros(
                 str(prompt.get("content", "")),
                 variables,
@@ -1208,6 +1234,11 @@ class TavernDataService:
         for identifier, item in readonly_items.items():
             if identifier not in seen:
                 ordered.append(dict(item))
+                seen.add(identifier)
+
+        # 「🆕本轮新输入」是可选条目：不在顺序表里也要显示，方便拖到想要的位置。
+        if NEW_INPUT_ENTRY_ID not in seen:
+            ordered.append(self.new_input_prompt_item())
 
         return ordered
 

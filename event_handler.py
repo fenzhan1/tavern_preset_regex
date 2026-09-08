@@ -15,6 +15,7 @@ from src.kernel.event import EventDecision
 
 from .config import TavernRegexConfig
 from .engine import apply_rules
+from .novel_store import NEW_INPUT_ENTRY_ID
 from .tavern_store import TavernDataService, _render_tavern_macros
 
 logger = get_logger("tavern_preset_regex")
@@ -373,6 +374,39 @@ def _render_conversation_block(payloads: list[Any]) -> str:
     return "\n\n".join(lines)
 
 
+def _has_tool_content(payload: Any) -> bool:
+    """payload 里是否含有工具调用/工具结果。"""
+    for part in getattr(payload, "content", []) or []:
+        if isinstance(part, (ToolCall, ToolResult)):
+            return True
+    return False
+
+
+def _merge_adjacent_same_role(payloads: list[Any]) -> None:
+    """把相邻的纯文本 user payload 合并，行为与 MoFox 的 add_payload 一致。
+
+    「历史 + 本轮新输入」被排到一起时会重新合成一条 user 消息。
+    只合并 user：assistant 不合并，避免把预填充并进上轮回复。
+    """
+    merged: list[Any] = []
+    for payload in payloads:
+        role = str(getattr(payload, "role", ""))
+        content = getattr(payload, "content", None)
+        if (
+            role == str(ROLE.USER)
+            and merged
+            and str(getattr(merged[-1], "role", "")) == role
+            and isinstance(content, list)
+            and isinstance(getattr(merged[-1], "content", None), list)
+            and not _has_tool_content(payload)
+            and not _has_tool_content(merged[-1])
+        ):
+            merged[-1].content.extend(content)
+            continue
+        merged.append(payload)
+    payloads[:] = merged
+
+
 def _split_before_last_user(
     convo_block: list[Any],
 ) -> tuple[list[Any], list[Any]]:
@@ -438,25 +472,19 @@ def _inject_ordered_setvar_payloads(
     }
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
-    strict_mode = (
-        str(getattr(config.plugin, "user_block_position", "auto") or "auto") == "strict"
-        if config is not None
-        else False
-    )
-    history_part, tail_part = _split_before_last_user(convo_block)
+    # 顺序表里出现「🆕本轮新输入」条目时，对话块按该条目位置拆分插入。
+    split_convo = NEW_INPUT_ENTRY_ID in order_ids
+    if split_convo:
+        history_part, tail_part = _split_before_last_user(convo_block)
+    else:
+        history_part, tail_part = convo_block, []
     output: list[Any] = []
     used: set[str] = set()
     preset_names: dict[int, str] = {}
     # 对话块插入点：相对「固定块 + 预设」序列的下标。
     convo_anchor: int | None = None
-    # strict 模式：历史部分插在第一条预设之前。
-    history_inserted = False
 
     def append_preset(identifier: str, item: dict[str, Any]) -> None:
-        nonlocal history_inserted
-        if strict_mode and not history_inserted:
-            output.extend(history_part)
-            history_inserted = True
         preset_names[len(output)] = str(item.get("name", "") or identifier)
         output.append(
             _build_setvar_payload(
@@ -476,9 +504,15 @@ def _inject_ordered_setvar_payloads(
             used.add(identifier)
             continue
         if identifier == "mofox_user":
-            # 记录落点，等固定块与预设都放好后再插入，避免打散它内部
-            # 的历史 → 上轮回复 → 工具调用 → 本轮新输入 顺序。
-            convo_anchor = len(output)
+            if split_convo:
+                # 只放历史部分；本轮新输入由 mofox_new_input 的位置决定。
+                output.extend(history_part)
+            else:
+                convo_anchor = len(output)
+            used.add(identifier)
+            continue
+        if identifier == NEW_INPUT_ENTRY_ID:
+            output.extend(tail_part)
             used.add(identifier)
             continue
 
@@ -498,14 +532,7 @@ def _inject_ordered_setvar_payloads(
     if "mofox_tool" not in used:
         output.extend(function_block)
 
-    if strict_mode:
-        if not history_inserted:
-            # 没有预设条目时，历史直接跟在系统块后面。
-            output[len(system_block) : len(system_block)] = history_part
-        if tail_part:
-            output.extend(tail_part)
-
-    if convo_block:
+    if convo_block and not split_convo:
         position = (
             str(getattr(config.plugin, "user_block_position", "auto") or "auto")
             if config is not None
@@ -519,11 +546,7 @@ def _inject_ordered_setvar_payloads(
             not in (str(ROLE.SYSTEM), str(ROLE.TOOL))
         ]
 
-        if position == "strict":
-            # 已在上面按顺序表放好：系统块/工具块保持原位，历史在第一条预设之前，
-            # 本轮新输入在末尾。
-            pass
-        elif position == "head_tail":
+        if position == "head_tail":
             # 头部预填充预设 → 系统提示词 → 历史 → 本轮新输入 → 其余预设 → 工具声明。
             head_item: list[Any] = []
             head_text = str(settings.get("head_preset_text", "") or "").strip()
@@ -609,6 +632,7 @@ def _inject_ordered_setvar_payloads(
                 }
 
     payloads[:] = output
+    _merge_adjacent_same_role(payloads)
     return _demote_invalid_assistant_payloads(payloads, preset_names)
 
 

@@ -28,6 +28,10 @@ NOVEL_ENTRY_NAME = "📖小说当前段落"
 # 条目内容用宏写法，渲染时由当前段落填充，这样变量名可以自由配置。
 NOVEL_ENTRY_CONTENT = "{{getvar::current_chapter}}"
 
+# 「本轮新输入」虚拟条目：把对话块里的最后一条 user 单独拆出来，允许拖顺序。
+NEW_INPUT_ENTRY_ID = "mofox_new_input"
+NEW_INPUT_ENTRY_NAME = "🆕本轮新输入"
+
 NOVEL_SUFFIXES = (".txt", ".md")
 DEFAULT_STREAM_KEY = "default"
 MAX_TEXT_BYTES = 64 * 1024 * 1024

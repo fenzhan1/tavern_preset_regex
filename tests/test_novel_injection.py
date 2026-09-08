@@ -29,6 +29,7 @@ from src.kernel.llm import LLMPayload, ROLE, Text, ToolCall, ToolResult
 event_handler = importlib.import_module("tavern_preset_regex.event_handler")
 config_module = importlib.import_module("tavern_preset_regex.config")
 novel_module = importlib.import_module("tavern_preset_regex.novel_store")
+NEW_INPUT_ENTRY_ID = novel_module.NEW_INPUT_ENTRY_ID
 tavern_store = importlib.import_module("tavern_preset_regex.tavern_store")
 
 NovelService = novel_module.NovelService
@@ -283,13 +284,13 @@ def make_plugin(root: Path, **novel_overrides):
     return type("_FakePlugin", (), {"config": config})()
 
 
-def setvar_payload(order: list[str]) -> dict:
+def setvar_payload(order: list[str], reader_role: str = "user") -> dict:
     return {
         "prompts": [
             {
                 "identifier": "reader",
                 "name": "读小说变量",
-                "role": "user",
+                "role": reader_role,
                 "content": "<novel>{{getvar::current_chapter}}</novel>",
                 "enabled": True,
             }
@@ -473,6 +474,8 @@ def test_ordered_items_include_readonly_entries(tmp_path: Path) -> None:
     identifiers = [item["identifier"] for item in ordered]
     assert "novel_current" in identifiers
     assert "mofox_system" in identifiers
+    # 「🆕本轮新输入」必须出现且只出现一次
+    assert identifiers.count(NEW_INPUT_ENTRY_ID) == 1, identifiers[-5:]
     novel_item = next(item for item in ordered if item["identifier"] == "novel_current")
     assert novel_item["novel"] is True
     assert novel_item["fixed"] is True
@@ -480,11 +483,19 @@ def test_ordered_items_include_readonly_entries(tmp_path: Path) -> None:
 
 
 def test_request_injects_novel_with_configured_role(tmp_path: Path) -> None:
-    """配置里的 role 必须决定注入 payload 的角色，而不是固定 system。"""
+    """配置里的 role 必须决定小说内容的角色，而不是固定 system。
+
+    注意：小说条目与相邻的同角色 user payload 会合并（与 MoFox 行为一致），
+    所以这里检查「小说正文出现在哪个角色的 payload 里」。
+    """
     write_novel(tmp_path)
+    # reader 用 system 角色，避免它与 user 角色的小说条目合并成同一条 payload
     (tmp_path / "setvar.json").write_text(
         json.dumps(
-            setvar_payload(["mofox_system", "reader", "mofox_user", "novel_current"]),
+            setvar_payload(
+                ["mofox_system", "reader", "mofox_user", "novel_current"],
+                reader_role="system",
+            ),
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -496,17 +507,24 @@ def test_request_injects_novel_with_configured_role(tmp_path: Path) -> None:
         ("assistant", ROLE.ASSISTANT),
     ):
         plugin = make_plugin(tmp_path, enabled=True, role=role)
+        # 每个角色都从第一段开始，避免上一轮推进把小说读完
+        make_service(tmp_path, enabled=True).reset_novel(f"s-{role}")
         payloads = run_request(plugin, f"s-{role}")
-        novel_payloads = []
-        for payload in payloads:
-            text = "".join(
-                part.text for part in payload.content if isinstance(part, Text)
+        # 小说条目自身：带 setvar 标记、含正文，且不是预设里的 <novel> 包裹条目
+        holders = [
+            payload
+            for payload in payloads
+            if "第一章"
+            in (
+                text := "".join(
+                    part.text for part in payload.content if isinstance(part, Text)
+                )
             )
-            # 小说条目自身：正文里没有 <novel> 包裹（那是预设里的 reader 条目）
-            if "tavern_setvar" in text and "第一章" in text and "<novel>" not in text:
-                novel_payloads.append(payload)
-        assert novel_payloads, f"{role}: 没找到小说条目"
-        assert novel_payloads[0].role == expected, f"{role} -> {novel_payloads[0].role}"
+            and "tavern_setvar" in text
+            and "<novel>" not in text
+        ]
+        assert holders, f"{role}: 没找到小说条目"
+        assert holders[0].role == expected, f"{role} -> {holders[0].role}"
 
 
 def test_webui_state_endpoint_ok(tmp_path: Path) -> None:
@@ -656,6 +674,86 @@ def test_head_tail_without_head_text(tmp_path: Path) -> None:
         for payload in payloads
     ]
     assert "MoFox 系统提示词" in texts[0], f"第一条应是系统提示词：{texts[0][:40]}"
+
+
+def test_new_input_entry_is_reorderable(tmp_path: Path) -> None:
+    """顺序表里出现 mofox_new_input 时，本轮新输入可以拖到任意位置。"""
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    # 把「自定义user」改成 system 角色，避免它与本轮新输入合并成一条 user
+    for prompt in data["prompts"]:
+        if prompt["identifier"] == "tail":
+            prompt["role"] = "system"
+    # 把「本轮新输入」排到 ass预设 之后、自定义user 之前
+    data["mofox_order"] = [
+        "mofox_system",
+        "prefill",
+        NEW_INPUT_ENTRY_ID,
+        "tail",
+        "mofox_tool",
+        "mofox_user",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+    index_of = lambda needle: next(
+        index for index, text in enumerate(texts) if needle in text
+    )
+    prefill_index = index_of("明白了。")
+    new_input_index = index_of("本轮新输入")
+    tail_index = index_of("然后直接开始输出")
+
+    assert prefill_index < new_input_index < tail_index, (
+        f"本轮新输入没有排到指定位置：{texts}"
+    )
+
+
+def test_new_input_merges_with_adjacent_history(tmp_path: Path) -> None:
+    """历史以 user 结尾时，本轮新输入紧挨其后会合并成一条 user 消息。"""
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    data["mofox_order"] = [
+        "mofox_system",
+        "mofox_user",
+        NEW_INPUT_ENTRY_ID,
+        "prefill",
+        "tail",
+        "mofox_tool",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    # 历史以 user 结尾（真实对话里通常就是这样）
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text("MoFox 系统提示词")]),
+        LLMPayload(ROLE.TOOL, [Text("工具声明")]),
+        LLMPayload(ROLE.USER, [Text("系统上下文：conversation_context")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("上轮回复")]),
+        LLMPayload(ROLE.USER, [Text("上一轮用户消息")]),
+        LLMPayload(ROLE.USER, [Text("本轮新输入：latest_events")]),
+    ]
+    result = run_request_with(plugin, payloads)
+
+    user_payloads = [payload for payload in result if payload.role == ROLE.USER]
+    # 「上一轮用户消息 + 本轮新输入」应合并成同一条 user payload
+    merged = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in user_payloads
+    ]
+    assert any("上一轮用户消息" in text and "本轮新输入" in text for text in merged), (
+        f"没有合并：{merged}"
+    )
 
 
 def test_user_block_position_before_last_user(tmp_path: Path) -> None:
