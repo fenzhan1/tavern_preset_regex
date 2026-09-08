@@ -10,8 +10,6 @@
     python scripts/sync_git_from_remote.py --tag v2.3.1 --dry-run
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入插件模块
-
 from __future__ import annotations
 
 import argparse
@@ -21,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from push_via_api import (  # noqa: E402
+from push_via_api import (
     BRANCH,
     OWNER,
     PLUGIN_ROOT,
@@ -48,6 +46,7 @@ def run_git(
         capture_output=True,
         input=input_text.encode("utf-8") if input_text is not None else None,
         env=merged,
+        check=False,
     )
     if result.returncode != 0:
         raise SystemExit(

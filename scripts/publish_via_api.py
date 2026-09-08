@@ -10,19 +10,16 @@ Git Data API 把工作区内容打成新提交推到远端，并把版本标签�
     python scripts/publish_via_api.py --tag v2.4.0 --message "..."
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入插件模块
-
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from push_via_api import (  # noqa: E402
+from push_via_api import (
     BRANCH,
     OWNER,
     PLUGIN_ROOT,
@@ -42,6 +39,7 @@ def run_git(*args: str, input_bytes: bytes | None = None) -> str:
         ["git", "-C", str(PLUGIN_ROOT), "-c", "core.autocrlf=false", *args],
         capture_output=True,
         input=input_bytes,
+        check=False,
     )
     if result.returncode != 0:
         raise SystemExit(

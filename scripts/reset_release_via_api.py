@@ -8,20 +8,15 @@
 Token 从 ``~/.mpdt/config.toml`` 的 ``[github] token`` 读取。
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入插件模块
-
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from push_via_api import API, OWNER, REPO, api, load_token  # noqa: E402
+from push_via_api import OWNER, REPO, api, load_token
 
 
 def main() -> int:

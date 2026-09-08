@@ -14,14 +14,13 @@
 Token 从 ``~/.mpdt/config.toml`` 的 ``[github] token`` 读取。
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入插件模块
+# ruff: noqa: I001 - 该文件既是脚本又是被其他脚本导入的模块
 
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
-import sys
 import time
 import tomllib
 import urllib.error
@@ -98,6 +97,7 @@ def git(*args: str) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        check=False,
     )
     if result.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} 失败: {result.stderr.strip()}")
