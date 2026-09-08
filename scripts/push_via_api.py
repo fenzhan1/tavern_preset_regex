@@ -85,10 +85,14 @@ def api(
             last_error = exc
             if attempt < retries:
                 wait = 2 * attempt
-                print(f"  [api] {method} {path} 第 {attempt} 次失败（{exc}），{wait}s 后重试")
+                print(
+                    f"  [api] {method} {path} 第 {attempt} 次失败（{exc}），{wait}s 后重试"
+                )
                 time.sleep(wait)
 
-    raise SystemExit(f"GitHub API {method} {path} 重试 {retries} 次仍失败: {last_error}")
+    raise SystemExit(
+        f"GitHub API {method} {path} 重试 {retries} 次仍失败: {last_error}"
+    )
 
 
 def git(*args: str) -> str:

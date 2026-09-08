@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.stream_api import get_stream_info
 from src.app.plugin_system.base import BaseEventHandler
-from src.app.plugin_system.types import ROLE, LLMPayload, Text, ToolCall
+from src.app.plugin_system.types import ROLE, LLMPayload, Text, ToolCall, ToolResult
 from src.core.components.types import EventType
 from src.kernel.event import EventDecision
 
@@ -322,6 +323,56 @@ def _demote_invalid_assistant_payloads(
     return demoted
 
 
+def _render_tool_call(part: Any) -> str:
+    """把一次工具调用渲染成一行文本。"""
+    name = str(getattr(part, "name", "") or "")
+    args = getattr(part, "args", None)
+    if isinstance(args, dict):
+        try:
+            args_text = json.dumps(args, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_text = str(args)
+    else:
+        args_text = str(args)
+    return f"调用工具 {name}({args_text})"
+
+
+def _render_conversation_block(payloads: list[Any]) -> str:
+    """把对话块（历史 + 上轮回复 + 工具调用 + 本轮新输入）渲染成文本。
+
+    供预设条目里的 ``{{mofox_conversation}}`` 使用，让预设条目也能拿到
+    每轮追加的回复与工具调用记录。
+    """
+    lines: list[str] = []
+    for payload in payloads:
+        role = str(getattr(payload, "role", ""))
+        if role == str(ROLE.USER):
+            label = "用户"
+        elif role == str(ROLE.ASSISTANT):
+            label = "助手"
+        elif role == str(ROLE.TOOL_RESULT):
+            label = "工具结果"
+        elif role == str(ROLE.TOOL):
+            continue
+        else:
+            label = role or "未知"
+
+        for part in getattr(payload, "content", []) or []:
+            if isinstance(part, Text):
+                if part.text.strip():
+                    lines.append(f"[{label}] {part.text}")
+            elif isinstance(part, ToolCall):
+                lines.append(f"[{label}] {_render_tool_call(part)}")
+            elif isinstance(part, ToolResult):
+                lines.append(f"[工具结果] {part.to_text()}")
+            else:
+                # ReasoningText 等其它文本型内容
+                text = getattr(part, "text", None)
+                if isinstance(text, str) and text.strip():
+                    lines.append(f"[{label}·思考] {text}")
+    return "\n\n".join(lines)
+
+
 def _inject_ordered_setvar_payloads(
     payloads: list[Any],
     service: Any,
@@ -355,9 +406,15 @@ def _inject_ordered_setvar_payloads(
     inject_when_empty = bool(settings.get("inject_when_empty", False))
     include_novel = entry_enabled and (bool(content) or inject_when_empty)
 
+    # 对话块文本（历史 + 上轮回复 + 工具调用 + 本轮新输入），
+    # 供预设条目里的 {{mofox_conversation}} 使用。
+    _, _, convo_block_for_text = _split_mofox_payloads(payloads)
+    conversation_text = _render_conversation_block(convo_block_for_text)
+
     rendered_items = service.render_setvar_payloads(
         seed_variables=seed,
         include_novel=include_novel,
+        conversation=conversation_text,
     )
     order_ids = service.resolve_mofox_order(service.load_setvar_payload())
     by_identifier = {
@@ -368,6 +425,8 @@ def _inject_ordered_setvar_payloads(
     output: list[Any] = []
     used: set[str] = set()
     preset_names: dict[int, str] = {}
+    # 对话块插入点：相对「固定块 + 预设」序列的下标。
+    convo_anchor: int | None = None
 
     def append_preset(identifier: str, item: dict[str, Any]) -> None:
         preset_names[len(output)] = str(item.get("name", "") or identifier)
@@ -389,7 +448,9 @@ def _inject_ordered_setvar_payloads(
             used.add(identifier)
             continue
         if identifier == "mofox_user":
-            output.extend(convo_block)
+            # 记录落点，等固定块与预设都放好后再插入，避免打散它内部
+            # 的历史 → 上轮回复 → 工具调用 → 本轮新输入 顺序。
+            convo_anchor = len(output)
             used.add(identifier)
             continue
 
@@ -403,12 +464,55 @@ def _inject_ordered_setvar_payloads(
         if identifier and identifier not in used:
             append_preset(identifier, item)
 
+    # 顺序表里缺失的固定块补到末尾（与旧行为一致）。
     if "mofox_system" not in used:
         output.extend(system_block)
     if "mofox_tool" not in used:
         output.extend(function_block)
-    if "mofox_user" not in used:
-        output.extend(convo_block)
+
+    if convo_block:
+        position = (
+            str(getattr(config.plugin, "user_block_position", "auto") or "auto")
+            if config is not None
+            else "auto"
+        )
+        if position == "after_system":
+            # 紧跟 system / tool 固定块之后、所有预设之前：
+            # 这样「上轮回复 + 工具调用」跟着系统上下文一起出现，
+            # 而后面的预设条目（如 assistant 预填充）仍然排在最后。
+            insert_at = 0
+            for index, payload in enumerate(output):
+                if str(getattr(payload, "role", "")) in (
+                    str(ROLE.SYSTEM),
+                    str(ROLE.TOOL),
+                ):
+                    insert_at = index + 1
+            output[insert_at:insert_at] = convo_block
+        elif position == "end":
+            insert_at = len(output)
+            output.extend(convo_block)
+        else:
+            # auto：按顺序表里拖到的位置插入（未出现在顺序表则放末尾）；
+            # 若该位置前面还有 system/tool 固定块（例如缺失的 tool 被补到
+            # 末尾），则把对话块放到这些固定块之后，保证它不夹在固定块中间。
+            insert_at = convo_anchor if convo_anchor is not None else len(output)
+            insert_at = min(insert_at, len(output))
+            fixed_end = 0
+            for index, payload in enumerate(output[:insert_at]):
+                if str(getattr(payload, "role", "")) in (
+                    str(ROLE.SYSTEM),
+                    str(ROLE.TOOL),
+                ):
+                    fixed_end = index + 1
+            insert_at = max(fixed_end, insert_at)
+            output[insert_at:insert_at] = convo_block
+
+        # 对话块插入后，后面的预设条目下标整体后移，日志里的条目名要对齐。
+        if insert_at < len(output):
+            preset_names = {
+                index + len(convo_block) if index >= insert_at else index: name
+                for index, name in preset_names.items()
+            }
 
     payloads[:] = output
     return _demote_invalid_assistant_payloads(payloads, preset_names)
@@ -486,9 +590,7 @@ class TavernRequestHandler(BaseEventHandler):
                 "主回复模型请求已处理：request_name={} payloads={} roles={}".format(
                     params.get("request_name"),
                     len(payloads),
-                    ",".join(
-                        str(getattr(payload, "role", "")) for payload in payloads
-                    ),
+                    ",".join(str(getattr(payload, "role", "")) for payload in payloads),
                 )
             )
 

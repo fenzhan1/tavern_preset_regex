@@ -169,6 +169,12 @@
 
     <section id="presets">
       <div class="toolbar">
+        <label class="status">对话块位置</label>
+        <select id="block-position" title="「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + 本轮新输入）在请求里的位置">
+          <option value="auto">跟随顺序表</option>
+          <option value="after_system">紧跟系统提示词</option>
+          <option value="end">固定放最后</option>
+        </select>
         <button id="add-preset">新增预设</button>
         <button class="primary" id="save-presets">保存预设</button>
       </div>
@@ -387,6 +393,10 @@
 
     function renderPresets() {
       presetRows.innerHTML = '';
+      const blockSelect = document.getElementById('block-position');
+      if (blockSelect && state.novel && state.novel.config) {
+        blockSelect.value = state.novel.config.user_block_position || 'auto';
+      }
       if (!state.presetItems.length) {
         presetRows.innerHTML = '<tr><td colspan="7" class="empty">暂无预设条目</td></tr>';
         return;
@@ -598,8 +608,29 @@
       }
     }
 
-    async function saveRegex() {
+    async function saveBlockPosition() {
+      const value = document.getElementById('block-position').value;
       try {
+        const response = await fetch('/plugins/tavern-preset-regex/api/novel', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_block_position: value })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        if (state.novel) state.novel.config = data.config;
+        const labels = {
+          auto: '跟随顺序表（在下方把「MoFox 用户上下文」拖到想要的位置）',
+          after_system: '紧跟系统提示词之后，上一轮回复与工具调用会一起出现在这里',
+          end: '固定放在请求最后'
+        };
+        setStatus(`对话块位置已设为：${labels[value] || value}`);
+      } catch (error) {
+        setStatus(`保存对话块位置失败：${error.message}`, false);
+      }
+    }
+
+    async function saveRegex() {      try {
         const response = await fetch('/plugins/tavern-preset-regex/api/regex', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -800,6 +831,7 @@
       renderRegexes();
     });
     document.getElementById('save-presets').addEventListener('click', saveSetvar);
+    document.getElementById('block-position').addEventListener('change', saveBlockPosition);
     document.getElementById('save-regexes').addEventListener('click', saveRegex);
     document.getElementById('import-button').addEventListener('click', () => document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change', importFile);

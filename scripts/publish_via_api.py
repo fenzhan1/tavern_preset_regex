@@ -172,9 +172,7 @@ def main() -> int:
     print(f"远端 {BRANCH} 已更新")
 
     try:
-        existing = api(
-            "GET", f"/repos/{OWNER}/{REPO}/git/ref/tags/{args.tag}", token
-        )
+        existing = api("GET", f"/repos/{OWNER}/{REPO}/git/ref/tags/{args.tag}", token)
     except SystemExit:
         existing = None
     if existing:

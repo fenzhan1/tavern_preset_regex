@@ -6,8 +6,6 @@
     python scripts/diagnose_webui.py --data-dir D:\\...\\data\\tavern_preset_regex
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入 neo-mofox 与插件模块
-
 from __future__ import annotations
 
 import argparse
@@ -48,7 +46,9 @@ def main() -> int:
 
     config = TavernRegexConfig()
     config.plugin.data_dir = args.data_dir
-    plugin = type("_FakePlugin", (), {"config": config, "plugin_name": "tavern_preset_regex"})()
+    plugin = type(
+        "_FakePlugin", (), {"config": config, "plugin_name": "tavern_preset_regex"}
+    )()
 
     print(f"data_dir = {args.data_dir}")
     print("=== 直接调用 TavernDataService（绕过 HTTP） ===")

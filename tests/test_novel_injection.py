@@ -24,7 +24,7 @@ NEO_MOFOX = Path("D:/Neo-MoFox_Bots/myplugins/neo-mofox")
 if NEO_MOFOX.is_dir():
     sys.path.insert(0, str(NEO_MOFOX))
 
-from src.kernel.llm import LLMPayload, ROLE, Text
+from src.kernel.llm import LLMPayload, ROLE, Text, ToolCall, ToolResult
 
 event_handler = importlib.import_module("tavern_preset_regex.event_handler")
 config_module = importlib.import_module("tavern_preset_regex.config")
@@ -315,6 +315,61 @@ def run_request(plugin, stream_id: str) -> list[LLMPayload]:
     return params["payloads"]
 
 
+def real_like_payloads() -> list[LLMPayload]:
+    """模拟第二次请求的真实结构（与用户日志一致）。
+
+    System(系统提示) → User(系统上下文/历史) → Assistant(上轮回复, 带 tool_call)
+    → Tool(工具结果) → Assistant(__SUSPEND__) → User(本轮新输入)
+    """
+    return [
+        LLMPayload(ROLE.SYSTEM, [Text("MoFox 系统提示词")]),
+        LLMPayload(ROLE.TOOL, [Text("工具声明")]),
+        LLMPayload(
+            ROLE.USER, [Text("系统上下文：conversation_context + latest_events")]
+        ),
+        LLMPayload(
+            ROLE.ASSISTANT,
+            [
+                Text("上轮回复"),
+                ToolCall(
+                    "call_1", "action-send_text", {"content": "艾特我又半天不放一个字"}
+                ),
+            ],
+        ),
+        LLMPayload(ROLE.TOOL_RESULT, [ToolResult({"status": "已发送消息"}, "call_1")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("__SUSPEND__")]),
+        LLMPayload(ROLE.USER, [Text("本轮新输入：latest_events")]),
+    ]
+
+
+def run_request_with(
+    plugin, payloads: list[LLMPayload], stream_id: str = "s"
+) -> list[LLMPayload]:
+    handler = TavernRequestHandler(plugin)
+    params = {
+        "request_name": "neo_default_chatter",
+        "payloads": payloads,
+        "meta_data": {"stream_id": stream_id},
+    }
+    asyncio.run(handler.execute("before_llm_request", params))
+    return params["payloads"]
+
+
+def convo_signature(payloads: list[LLMPayload]) -> list[str]:
+    """取「系统上下文 + 上轮回复 + 工具调用 + 本轮新输入」这一段的角色序列。"""
+    roles = [str(payload.role) for payload in payloads]
+    try:
+        start = roles.index(str(ROLE.USER))
+    except ValueError:
+        return []
+    # 从第一条非 system/tool 的 user 开始，取到末尾的对话部分
+    return [
+        role
+        for role in roles[start:]
+        if role in (str(ROLE.USER), str(ROLE.ASSISTANT), str(ROLE.TOOL_RESULT))
+    ]
+
+
 def text_of(payloads: list[LLMPayload]) -> str:
     return "\n".join(
         part.text
@@ -480,3 +535,213 @@ def test_webui_state_endpoint_ok(tmp_path: Path) -> None:
         response = client.get(path)
         assert response.status_code == 200, f"{path} -> {response.status_code}"
     assert service.novel_state("x")["total"] == 3
+
+
+# ----- 对话块位置（user_block_position）-----
+
+
+def prepare_block_fixture(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            {
+                "prompts": [
+                    {
+                        "identifier": "prefill",
+                        "name": "ass预设",
+                        "role": "assistant",
+                        "content": "明白了。",
+                        "enabled": True,
+                    },
+                    {
+                        "identifier": "tail",
+                        "name": "自定义user",
+                        "role": "user",
+                        "content": "然后直接开始输出",
+                        "enabled": True,
+                    },
+                ],
+                "prompt_order": [
+                    {"identifier": "prefill", "enabled": True},
+                    {"identifier": "tail", "enabled": True},
+                ],
+                "mofox_order": [
+                    "mofox_system",
+                    "prefill",
+                    "tail",
+                    "mofox_tool",
+                    "mofox_user",
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_conversation_block_stays_contiguous(tmp_path: Path) -> None:
+    """对话块内部的 历史→回复→工具→新输入 必须保持连续、不被打散。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+
+    roles = [str(payload.role) for payload in payloads]
+    # 对话块的角色序列应当连续出现
+    convo = [
+        str(ROLE.USER),
+        str(ROLE.ASSISTANT),
+        str(ROLE.TOOL_RESULT),
+        str(ROLE.ASSISTANT),
+        str(ROLE.USER),
+    ]
+    joined = ",".join(roles)
+    assert ",".join(convo) in joined, f"对话块被打散：{roles}"
+
+    # 工具调用记录仍在 assistant 上，且紧跟系统上下文
+    assistant_with_tools = [
+        payload
+        for payload in payloads
+        if payload.role == ROLE.ASSISTANT
+        and any(isinstance(part, ToolCall) for part in payload.content)
+    ]
+    assert assistant_with_tools, "带工具调用的 assistant 丢了"
+
+
+def test_user_block_position_after_system(tmp_path: Path) -> None:
+    """after_system：对话块紧跟系统提示词，排在所有预设之前。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    plugin.config.plugin.user_block_position = "after_system"
+
+    payloads = run_request_with(plugin, real_like_payloads())
+    roles = [str(payload.role) for payload in payloads]
+
+    # 对话块（历史 + 上轮回复 + 工具调用 + 本轮新输入）必须连续出现
+    convo = [
+        str(ROLE.USER),
+        str(ROLE.ASSISTANT),
+        str(ROLE.TOOL_RESULT),
+        str(ROLE.ASSISTANT),
+        str(ROLE.USER),
+    ]
+    joined = ",".join(roles)
+    assert ",".join(convo) in joined, f"对话块被打散：{roles}"
+
+    # after_system：对话块整体连续出现，内部顺序为 历史→回复→工具→新输入
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+    convo_start = next(
+        index for index, text in enumerate(texts) if "系统上下文" in text
+    )
+    assert roles[convo_start : convo_start + 5] == convo, f"对话块顺序不对：{roles}"
+    assert "本轮新输入" in texts[convo_start + 4]
+
+
+def test_user_block_position_end(tmp_path: Path) -> None:
+    """end：对话块固定放在最后。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    plugin.config.plugin.user_block_position = "end"
+
+    payloads = run_request_with(plugin, real_like_payloads())
+    assert str(payloads[-1].role) == str(ROLE.USER)
+    assert "本轮新输入" in "".join(
+        part.text for part in payloads[-1].content if isinstance(part, Text)
+    )
+
+
+def test_user_block_position_defaults_to_auto(tmp_path: Path) -> None:
+    """默认 auto：不改动既有顺序表行为。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+    roles = [str(payload.role) for payload in payloads]
+    # mofox_order 里 mofox_user 在最后，所以最后仍是 user
+    assert roles[-1] == str(ROLE.USER)
+    assert "本轮新输入" in "".join(
+        part.text for part in payloads[-1].content if isinstance(part, Text)
+    )
+
+
+def test_block_position_saved_via_api(tmp_path: Path) -> None:
+    """WebUI 保存的对话块位置要写进 novel/config.json 并生效。"""
+    prepare_block_fixture(tmp_path)
+    service = make_service(tmp_path, enabled=False)
+    assert service.novel_settings()["user_block_position"] == "auto"
+
+    service.save_novel_settings({"user_block_position": "after_system"})
+    stored = json.loads((tmp_path / "novel" / "config.json").read_text("utf-8"))
+    assert stored == {"user_block_position": "after_system"}
+    assert service.novel_settings()["user_block_position"] == "after_system"
+
+    # TOML 里改的值会被 config.json 覆盖（UI 改动优先）
+    config = TavernRegexConfig()
+    config.plugin.data_dir = str(tmp_path)
+    config.plugin.user_block_position = "end"
+    plugin = type("_FakePlugin", (), {"config": config})()
+    service2 = TavernDataService(tavern_dir=tmp_path, plugin=plugin)
+    assert service2.novel_settings()["user_block_position"] == "after_system"
+
+
+# ----- {{mofox_conversation}} 宏 -----
+
+
+def prepare_conversation_fixture(tmp_path: Path) -> None:
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            {
+                "prompts": [
+                    {
+                        "identifier": "ctx",
+                        "name": "上下文条目",
+                        "role": "user",
+                        "content": "当前对话：\n{{mofox_conversation}}",
+                        "enabled": True,
+                    }
+                ],
+                "prompt_order": [{"identifier": "ctx", "enabled": True}],
+                "mofox_order": ["mofox_system", "ctx", "mofox_user"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_conversation_macro_contains_tool_calls(tmp_path: Path) -> None:
+    """预设条目里的 {{mofox_conversation}} 要包含回复、工具调用与工具结果。"""
+    prepare_conversation_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+
+    rendered = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+        if payload.role == ROLE.USER
+    ]
+    joined = "\n".join(rendered)
+    assert "当前对话：" in joined
+    assert "系统上下文" in joined  # 历史
+    assert "上轮回复" in joined  # 上一轮回复
+    assert "调用工具 action-send_text" in joined  # 工具调用
+    assert "已发送消息" in joined  # 工具结果
+    assert "本轮新输入" in joined  # 本轮新消息
+
+
+def test_conversation_macro_empty_when_no_conversation(tmp_path: Path) -> None:
+    """没有对话内容时宏渲染为空，不应残留占位符。"""
+    prepare_conversation_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text("系统提示词")]),
+        LLMPayload(ROLE.TOOL, [Text("工具声明")]),
+    ]
+    result = run_request_with(plugin, payloads)
+    joined = "\n".join(
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in result
+    )
+    assert "{{mofox_conversation}}" not in joined

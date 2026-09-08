@@ -85,7 +85,9 @@ SETVAR = {
 }
 
 
-def build_plugin(data_dir: Path, *, enabled: bool = True, batch: int = 1) -> SimpleNamespace:
+def build_plugin(
+    data_dir: Path, *, enabled: bool = True, batch: int = 1
+) -> SimpleNamespace:
     """构造带真实配置模型的假插件对象（TavernDataService 依赖 isinstance 判断）。"""
     config = TavernRegexConfig()
     config.plugin.data_dir = str(data_dir)
@@ -130,9 +132,7 @@ async def run_round(plugin: SimpleNamespace, stream_id: str) -> list[LLMPayload]
 
 def show(payloads: list[LLMPayload]) -> None:
     for index, payload in enumerate(payloads):
-        text = "".join(
-            part.text for part in payload.content if isinstance(part, Text)
-        )
+        text = "".join(part.text for part in payload.content if isinstance(part, Text))
         preview = text.replace("\n", "\\n")[:70]
         print(f"  [{index:>2}] {payload.role!s:<14} {preview}")
 

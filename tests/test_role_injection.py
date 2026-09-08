@@ -45,6 +45,7 @@ class FakeService:
         *,
         seed_variables: dict[str, str] | None = None,
         include_novel: bool = False,
+        conversation: str = "",
     ) -> list[dict[str, object]]:
         return [dict(item) for item in self._items]
 

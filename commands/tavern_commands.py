@@ -271,7 +271,11 @@ class TavernNovelCommand(BaseCommand):
             else:
                 lines = [f"novel/ 目录下共 {len(files)} 个小说文件："]
                 for index, item in enumerate(files, start=1):
-                    mark = "（当前）" if item.get("name") == state.get("active_file") else ""
+                    mark = (
+                        "（当前）"
+                        if item.get("name") == state.get("active_file")
+                        else ""
+                    )
                     lines.append(
                         f"{index}. {item.get('name')} - "
                         f"{round(item.get('size', 0) / 1024)} KB{mark}"
@@ -309,10 +313,7 @@ class TavernNovelCommand(BaseCommand):
     async def handle_jump(self, index: str) -> tuple[bool, str]:
         try:
             result = self._service().jump_novel(int(index), self.stream_id)
-            text = (
-                f"已跳转到第 {result['start']} 段并注入"
-                f"（共 {result['total']} 段）"
-            )
+            text = f"已跳转到第 {result['start']} 段并注入（共 {result['total']} 段）"
         except Exception as exc:
             text = f"跳转小说失败：{exc}"
         await self._reply(text)

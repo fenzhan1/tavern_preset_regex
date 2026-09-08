@@ -15,6 +15,7 @@ from src.core.config import get_core_config
 
 from .config import RuleSection, TavernRegexConfig
 from .novel_store import (
+    BLOCK_RUNTIME_KEYS,
     NOVEL_ENTRY_CONTENT,
     NOVEL_ENTRY_ID,
     NOVEL_ENTRY_NAME,
@@ -209,8 +210,13 @@ def _render_tavern_macros(
     *,
     bot_name: str = "",
     user_name: str = "用户",
+    conversation: str = "",
 ) -> str:
-    """处理酒馆预设中常用的变量与随机宏。"""
+    """处理酒馆预设中常用的变量与随机宏。
+
+    ``conversation`` 是本次请求的对话块文本（历史 + 上轮回复 + 工具调用 +
+    本轮新输入），用于 ``{{mofox_conversation}}``。
+    """
 
     def _setvar(match: re.Match[str]) -> str:
         name = match.group(1).strip()
@@ -252,7 +258,9 @@ def _render_tavern_macros(
         lambda match: "".join(random.choices(string.digits, k=int(match.group(1)))),
         content,
     )
-    content = content.replace("{{trim}}", "").replace("{{lastUserMessage}}", "")
+    content = content.replace("{{trim}}", "")
+    content = content.replace("{{mofox_conversation}}", conversation)
+    content = content.replace("{{lastUserMessage}}", "")
     content = content.replace("{{char}}", bot_name).replace("{{user}}", user_name)
     return content.strip()
 
@@ -697,7 +705,11 @@ class TavernDataService:
         return getattr(config, "novel", None)
 
     def novel_settings(self) -> dict[str, Any]:
-        """合并 config.toml 的 ``[novel]`` 与 ``novel/config.json`` 的运行时设置。"""
+        """合并 config.toml 与 ``novel/config.json`` 的运行时设置。
+
+        小说项来自 ``config.toml`` 的 ``[novel]``；顺序项（如对话块位置）来自
+        ``[plugin]``。两边都可以被 ``novel/config.json`` 里的显式改动覆盖。
+        """
         novel = self.novel_config()
         base: dict[str, Any] = {}
         if novel is not None:
@@ -706,6 +718,12 @@ class TavernDataService:
                 for key in NOVEL_RUNTIME_KEYS
                 if hasattr(novel, key)
             }
+        plugin_section = getattr(self.plugin, "config", None)
+        plugin_section = getattr(plugin_section, "plugin", None)
+        if plugin_section is not None:
+            for key in BLOCK_RUNTIME_KEYS:
+                if hasattr(plugin_section, key):
+                    base[key] = getattr(plugin_section, key)
         runtime = NovelRuntimeConfig(self.novel_dir).load()
         base.update(runtime)
         return normalize_novel_config(base)
@@ -887,6 +905,7 @@ class TavernDataService:
         *,
         seed_variables: dict[str, str] | None = None,
         include_novel: bool = False,
+        conversation: str = "",
     ) -> list[dict[str, Any]]:
         """按顺序渲染启用的酒馆预设条目。
 
@@ -895,7 +914,8 @@ class TavernDataService:
         统一排序。
 
         ``seed_variables`` 用于预先塞入变量（例如小说当前段落），
-        ``include_novel`` 决定是否把「📖小说当前段落」虚拟条目一起渲染。
+        ``include_novel`` 决定是否把「📖小说当前段落」虚拟条目一起渲染，
+        ``conversation`` 供预设里的 ``{{mofox_conversation}}`` 使用。
         """
         payload = self.load_setvar_payload()
         variables: dict[str, str] = dict(seed_variables or {})
@@ -907,6 +927,7 @@ class TavernDataService:
                 str(prompt.get("content", "")),
                 variables,
                 bot_name=self._bot_name(),
+                conversation=conversation,
             )
             if not content:
                 continue

@@ -98,9 +98,7 @@ async def main() -> int:
     ]
     print(f"assistant payload 数量：{len(assistant_items)}")
     for payload in assistant_items:
-        text = "".join(
-            part.text for part in payload.content if isinstance(part, Text)
-        )
+        text = "".join(part.text for part in payload.content if isinstance(part, Text))
         preview = text.replace("\n", "\\n")[:80]
         print(f"  - {preview}")
 

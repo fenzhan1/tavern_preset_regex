@@ -54,9 +54,7 @@ def build_payloads() -> list[LLMPayload]:
 
 def dump(payloads: list[LLMPayload]) -> None:
     for index, payload in enumerate(payloads):
-        text = "".join(
-            part.text for part in payload.content if isinstance(part, Text)
-        )
+        text = "".join(part.text for part in payload.content if isinstance(part, Text))
         preview = text.replace("\n", "\\n")[:60]
         print(f"  [{index:>3}] {payload.role!s:<14} {preview}")
 
@@ -85,9 +83,7 @@ def main() -> int:
     if not assistant_items:
         print("  没有 assistant payload（可能全部被降级或未启用）")
     for payload in assistant_items:
-        text = "".join(
-            part.text for part in payload.content if isinstance(part, Text)
-        )
+        text = "".join(part.text for part in payload.content if isinstance(part, Text))
         preview = text.replace("\n", "\\n")[:80]
         print(f"  {preview}")
     return 0

@@ -28,7 +28,7 @@ NEO_MOFOX = Path("D:/Neo-MoFox_Bots/myplugins/neo-mofox")
 if NEO_MOFOX.is_dir():
     sys.path.insert(0, str(NEO_MOFOX))
 
-from src.kernel.llm import LLMPayload, ROLE, Text  # noqa: E402
+from src.kernel.llm import LLMPayload, ROLE, Text
 
 config_module = importlib.import_module("tavern_preset_regex.config")
 event_handler = importlib.import_module("tavern_preset_regex.event_handler")
@@ -58,16 +58,14 @@ def run_request(service: TavernDataService, plugin, stream_id: str) -> list[LLMP
 
 def find_novel_payload(payloads: list[LLMPayload]) -> LLMPayload | None:
     for payload in payloads:
-        text = "".join(
-            part.text for part in payload.content if isinstance(part, Text)
-        )
-        if "tavern_setvar" in text and "<novel>" not in text:
-            # 小说条目：setvar 标记后紧跟章节正文
-            if any(
-                marker in text
-                for marker in ("第", "章", "节", "卷", "段", "序")
-            ):
-                return payload
+        text = "".join(part.text for part in payload.content if isinstance(part, Text))
+        # 小说条目：setvar 标记后紧跟章节正文，且不是预设里的 <novel> 包裹条目
+        if (
+            "tavern_setvar" in text
+            and "<novel>" not in text
+            and any(marker in text for marker in ("第", "章", "节", "卷", "段", "序"))
+        ):
+            return payload
     return None
 
 

@@ -34,14 +34,22 @@ class NovelConfigPayload(BaseModel):
     file: str | None = Field(default=None, description="当前小说文件名")
     split_mode: str | None = Field(default=None, description="auto/chapter/char/line")
     char_size: int | None = Field(default=None, description="按字数分段的每段字数")
-    lines_per_segment: int | None = Field(default=None, description="按行数分段的每段行数")
+    lines_per_segment: int | None = Field(
+        default=None, description="按行数分段的每段行数"
+    )
     chapter_pattern: str | None = Field(default=None, description="自定义章节正则")
     batch_size: int | None = Field(default=None, description="每次注入段数")
     loop: bool | None = Field(default=None, description="读完是否循环")
     variable_name: str | None = Field(default=None, description="当前段落写入的变量名")
     role: str | None = Field(default=None, description="注入条目角色")
     entry_enabled: bool | None = Field(default=None, description="是否注入小说条目")
-    inject_when_empty: bool | None = Field(default=None, description="读完是否仍注入空条目")
+    inject_when_empty: bool | None = Field(
+        default=None, description="读完是否仍注入空条目"
+    )
+    user_block_position: str | None = Field(
+        default=None,
+        description="对话块位置：auto/after_system/end",
+    )
 
 
 class NovelJumpPayload(BaseModel):
@@ -73,6 +81,7 @@ def _novel_public_state(state: dict[str, Any]) -> dict[str, Any]:
 
 class TavernRegexAdminRouter(BaseRouter):
     """酒馆预设与正则编辑页。"""
+
     name: str = "tavern_preset_regex_webui"
     description: str = "tavern_preset_regex 预设与正则编辑后台"
     custom_route_path: str = "/plugins/tavern-preset-regex"
@@ -132,9 +141,11 @@ class TavernRegexAdminRouter(BaseRouter):
             except Exception as exc:
                 logger.warning(f"推进小说失败: {exc}")
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            return {"ok": True, "result": result, **_novel_public_state(
-                service.novel_state(payload.stream_id)
-            )}
+            return {
+                "ok": True,
+                "result": result,
+                **_novel_public_state(service.novel_state(payload.stream_id)),
+            }
 
         @self.app.post("/api/novel/jump")
         async def novel_jump(payload: NovelJumpPayload) -> dict[str, Any]:
@@ -144,9 +155,11 @@ class TavernRegexAdminRouter(BaseRouter):
             except Exception as exc:
                 logger.warning(f"跳转小说失败: {exc}")
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            return {"ok": True, "result": result, **_novel_public_state(
-                service.novel_state(payload.stream_id)
-            )}
+            return {
+                "ok": True,
+                "result": result,
+                **_novel_public_state(service.novel_state(payload.stream_id)),
+            }
 
         @self.app.post("/api/novel/reset")
         async def novel_reset(payload: NovelJumpPayload) -> dict[str, Any]:
@@ -156,7 +169,10 @@ class TavernRegexAdminRouter(BaseRouter):
             except Exception as exc:
                 logger.warning(f"重置小说进度失败: {exc}")
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            return {"ok": True, **_novel_public_state(service.novel_state(payload.stream_id))}
+            return {
+                "ok": True,
+                **_novel_public_state(service.novel_state(payload.stream_id)),
+            }
 
         @self.app.put("/api/setvar")
         async def save_setvar(payload: SetvarItemsPayload) -> dict[str, Any]:

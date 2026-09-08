@@ -47,7 +47,9 @@ _HEADING_SPECIAL_RE = re.compile(
     r"(?:\s|[:：.、．]|$)"
 )
 _HEADING_NUM_RE = re.compile(r"^\s*[0-9０-９]+\s*[.、．·:：)）]")
-_HEADING_CN_NUM_RE = re.compile(r"^\s*[（(]?[一二三四五六七八九十百千万零〇]+\s*[、.．)）]")
+_HEADING_CN_NUM_RE = re.compile(
+    r"^\s*[（(]?[一二三四五六七八九十百千万零〇]+\s*[、.．)）]"
+)
 _HEADING_DI_SPECIAL_RE = re.compile(
     rf"^(?:第[0-9０-９{_CN_NUM_CHARS}]+[章节回卷部篇集幕話话]"
     r"|序章|序言|楔子|引子|前言|自序|终章|尾声|后记|番外(?:篇)?|外传|卷首语)"
@@ -138,7 +140,9 @@ def _split_by_chapter(text: str, pattern: re.Pattern[str]) -> list[str]:
             current.append(line)
     if "\n".join(current).strip():
         parts.append(current)
-    return [part.strip() for part in ("\n".join(item) for item in parts) if part.strip()]
+    return [
+        part.strip() for part in ("\n".join(item) for item in parts) if part.strip()
+    ]
 
 
 def _split_by_char(text: str, size: int) -> list[str]:
@@ -219,7 +223,9 @@ def split_novel(
     if requested not in ("auto", "chapter", "char", "line"):
         requested = "auto"
 
-    if requested == "chapter" or (requested == "auto" and detected["mode"] == "chapter"):
+    if requested == "chapter" or (
+        requested == "auto" and detected["mode"] == "chapter"
+    ):
         if pattern is None:
             logger.info("未识别到章节标题，退化为按字数切分")
             return {
@@ -256,7 +262,9 @@ def segment_title(segment: str) -> str:
     """取段落标题：首行是标题行就用首行，否则用开头若干字。"""
     if not segment:
         return ""
-    first_line = next((line.strip() for line in segment.split("\n") if line.strip()), "")
+    first_line = next(
+        (line.strip() for line in segment.split("\n") if line.strip()), ""
+    )
     candidate = first_line or segment.strip()
     if (
         _HEADING_DI_RE.match(candidate)
@@ -306,6 +314,15 @@ NOVEL_RUNTIME_KEYS: tuple[str, ...] = (
     "inject_when_empty",
 )
 
+# 预设顺序相关的运行时设置（同样存在 novel/config.json，由 WebUI 保存）
+BLOCK_RUNTIME_KEYS: tuple[str, ...] = ("user_block_position",)
+
+ALL_RUNTIME_KEYS: tuple[str, ...] = NOVEL_RUNTIME_KEYS + BLOCK_RUNTIME_KEYS
+
+_BLOCK_DEFAULTS: dict[str, Any] = {
+    "user_block_position": "auto",
+}
+
 _NOVEL_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "file": "",
@@ -328,8 +345,9 @@ _NOVEL_BOOL_KEYS = {"enabled", "loop", "entry_enabled", "inject_when_empty"}
 def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     """把任意来源的配置规范化成完整的小说设置字典。"""
     merged = dict(_NOVEL_DEFAULTS)
+    merged.update(_BLOCK_DEFAULTS)
     for key, value in (raw or {}).items():
-        if key not in NOVEL_RUNTIME_KEYS or value is None:
+        if key not in ALL_RUNTIME_KEYS or value is None:
             continue
         merged[key] = value
 
@@ -353,14 +371,19 @@ def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     merged["variable_name"] = str(merged["variable_name"] or "current_chapter").strip()
     merged["file"] = str(merged["file"] or "").strip()
     merged["chapter_pattern"] = str(merged["chapter_pattern"] or "")
+    merged["user_block_position"] = (
+        str(merged["user_block_position"])
+        if str(merged["user_block_position"]) in ("auto", "after_system", "end")
+        else "auto"
+    )
     return merged
 
 
 class NovelRuntimeConfig:
-    """``novel/config.json``：只保存「在 WebUI 里显式改过」的小说设置。
+    """``novel/config.json``：只保存「在 WebUI 里显式改过」的设置。
 
-    这里刻意不写入默认值：没有列进本文件的键继续使用插件 ``config.toml`` 的
-    ``[novel]`` 段，这样手改 TOML 对没被覆盖的键依然生效。
+    这里刻意不写入默认值：没有列进本文件的键继续使用插件 ``config.toml``，
+    这样手改 TOML 对没被覆盖的键依然生效。
     """
 
     def __init__(self, novel_dir: Path) -> None:
@@ -373,14 +396,14 @@ class NovelRuntimeConfig:
         return {
             key: value
             for key, value in payload.items()
-            if key in NOVEL_RUNTIME_KEYS and value is not None
+            if key in ALL_RUNTIME_KEYS and value is not None
         }
 
     def save(self, updates: dict[str, Any]) -> dict[str, Any]:
         """合并写入覆盖项，并返回写入后的覆盖项（未做默认值补全）。"""
         current = self.load()
         for key, value in (updates or {}).items():
-            if key in NOVEL_RUNTIME_KEYS and value is not None:
+            if key in ALL_RUNTIME_KEYS and value is not None:
                 current[key] = value
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _write_json(self.path, current)

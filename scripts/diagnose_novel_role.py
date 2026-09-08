@@ -6,8 +6,6 @@
     python scripts/diagnose_novel_role.py --data-dir D:\\...\\data\\tavern_preset_regex
 """
 
-# ruff: noqa: I001 - 需要先补齐 sys.path 才能导入 neo-mofox 与插件模块
-
 from __future__ import annotations
 
 import argparse
