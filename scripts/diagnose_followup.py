@@ -58,12 +58,13 @@ SETVAR = {
 
 
 def build_followup_payloads() -> list[LLMPayload]:
-    """模拟工具调用后的二次请求：预设已经在 payload 里，历史在后面。"""
+    """模拟线上 #29 的结构：两轮工具调用，预设已在 payload 里。"""
     return [
         LLMPayload(ROLE.SYSTEM, [Text(f"{MARKER}\n</clear> 预设一")]),
         LLMPayload(ROLE.USER, [Text(f"{MARKER}\n角色引导 预设二")]),
         LLMPayload(ROLE.SYSTEM, [Text("MoFox系统提示词")]),
         LLMPayload(ROLE.USER, [Text("历史：conversation_context")]),
+        # 第一次工具调用：assistant 带 tool_call + 预填充文本
         LLMPayload(
             ROLE.ASSISTANT,
             [
@@ -72,6 +73,14 @@ def build_followup_payloads() -> list[LLMPayload]:
             ],
         ),
         LLMPayload(ROLE.TOOL_RESULT, [ToolResult({"status": "已发送消息"}, "call_1")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("__SUSPEND__")]),
+        # 第二次工具调用（线上 #10~#13）
+        LLMPayload(ROLE.USER, [Text("第二轮新输入")]),
+        LLMPayload(
+            ROLE.ASSISTANT,
+            [ToolCall("call_2", "action-send_text", {"content": "yo"})],
+        ),
+        LLMPayload(ROLE.TOOL_RESULT, [ToolResult({"status": "已发送消息"}, "call_2")]),
         LLMPayload(ROLE.ASSISTANT, [Text("__SUSPEND__")]),
         LLMPayload(ROLE.USER, [Text("本轮新输入")]),
     ]

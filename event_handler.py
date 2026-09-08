@@ -274,10 +274,6 @@ def _has_setvar_marker(payload: Any) -> bool:
     )
 
 
-def _contains_setvar_marker(payloads: list[Any]) -> bool:
-    return any(_has_setvar_marker(payload) for payload in payloads)
-
-
 def _tavern_role_to_role(raw_role: Any) -> ROLE:
     """把酒馆预设条目声明的角色映射成 MoFox 的 LLM 角色。"""
     name = str(raw_role or "").strip().lower()
