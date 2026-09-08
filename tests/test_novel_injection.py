@@ -199,6 +199,36 @@ def test_runtime_settings_override_toml(tmp_path: Path) -> None:
     assert settings["batch_size"] == 3
 
 
+def test_novel_role_comes_from_settings(tmp_path: Path) -> None:
+    """小说条目的角色必须跟随配置，不能在注入时被固定成 system。"""
+    write_novel(tmp_path)
+    for role in ("system", "user", "assistant"):
+        service = make_service(tmp_path, enabled=True, role=role)
+        item = service.novel_prompt_item()
+        assert item["role"] == role
+        assert service.novel_settings()["role"] == role
+
+
+def test_role_override_wins_and_only_stores_overrides(tmp_path: Path) -> None:
+    """WebUI 改过的键写进 config.json 并覆盖 TOML；没改过的键仍用 TOML。"""
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=True, role="system", batch_size=5)
+
+    service.save_novel_settings({"role": "user"})
+    stored = json.loads((tmp_path / "novel" / "config.json").read_text("utf-8"))
+    assert stored == {"role": "user"}, "config.json 不应写入默认值"
+
+    # 角色被覆盖，但 batch_size 仍取 TOML
+    settings = service.novel_settings()
+    assert settings["role"] == "user"
+    assert settings["batch_size"] == 5
+
+    # 之后手改 TOML 的 role，仍会被 config.json 覆盖（UI 改动优先）
+    service_toml_changed = make_service(tmp_path, enabled=True, role="assistant")
+    assert service_toml_changed.novel_settings()["role"] == "user"
+    assert service_toml_changed.novel_prompt_item()["role"] == "user"
+
+
 def test_novel_state_reports_segments(tmp_path: Path) -> None:
     write_novel(tmp_path)
     service = make_service(tmp_path, enabled=True)
@@ -373,6 +403,36 @@ def test_ordered_items_include_readonly_entries(tmp_path: Path) -> None:
     assert novel_item["novel"] is True
     assert novel_item["fixed"] is True
     assert novel_item["content"] == "{{getvar::current_chapter}}"
+
+
+def test_request_injects_novel_with_configured_role(tmp_path: Path) -> None:
+    """配置里的 role 必须决定注入 payload 的角色，而不是固定 system。"""
+    write_novel(tmp_path)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(["mofox_system", "reader", "mofox_user", "novel_current"]),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    for role, expected in (
+        ("system", ROLE.SYSTEM),
+        ("user", ROLE.USER),
+        ("assistant", ROLE.ASSISTANT),
+    ):
+        plugin = make_plugin(tmp_path, enabled=True, role=role)
+        payloads = run_request(plugin, f"s-{role}")
+        novel_payloads = []
+        for payload in payloads:
+            text = "".join(
+                part.text for part in payload.content if isinstance(part, Text)
+            )
+            # 小说条目自身：正文里没有 <novel> 包裹（那是预设里的 reader 条目）
+            if "tavern_setvar" in text and "第一章" in text and "<novel>" not in text:
+                novel_payloads.append(payload)
+        assert novel_payloads, f"{role}: 没找到小说条目"
+        assert novel_payloads[0].role == expected, f"{role} -> {novel_payloads[0].role}"
 
 
 def test_webui_state_endpoint_ok(tmp_path: Path) -> None:

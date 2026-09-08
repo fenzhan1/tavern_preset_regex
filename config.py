@@ -80,7 +80,10 @@ class NovelSection(SectionBase):
     )
     role: Literal["system", "user", "assistant"] = Field(
         default="system",
-        description="「📖小说当前段落」注入请求时使用的角色",
+        description=(
+            "「📖小说当前段落」注入请求时使用的角色。\n"
+            "也可在 WebUI「小说」标签的「注入角色」里改，改完立即生效。"
+        ),
         choices=["system", "user", "assistant"],
     )
     entry_enabled: bool = Field(

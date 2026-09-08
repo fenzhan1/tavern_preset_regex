@@ -354,7 +354,11 @@ def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class NovelRuntimeConfig:
-    """``novel/config.json``：运行时可改的小说设置。"""
+    """``novel/config.json``：只保存「在 WebUI 里显式改过」的小说设置。
+
+    这里刻意不写入默认值：没有列进本文件的键继续使用插件 ``config.toml`` 的
+    ``[novel]`` 段，这样手改 TOML 对没被覆盖的键依然生效。
+    """
 
     def __init__(self, novel_dir: Path) -> None:
         self.path = Path(novel_dir) / "config.json"
@@ -370,14 +374,14 @@ class NovelRuntimeConfig:
         }
 
     def save(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """合并写入覆盖项，并返回写入后的覆盖项（未做默认值补全）。"""
         current = self.load()
         for key, value in (updates or {}).items():
             if key in NOVEL_RUNTIME_KEYS and value is not None:
                 current[key] = value
-        normalized = normalize_novel_config(current)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json(self.path, normalized)
-        return normalized
+        _write_json(self.path, current)
+        return current
 
 
 class NovelService:

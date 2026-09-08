@@ -243,12 +243,18 @@
         <div class="novel-row">
           <label class="novel-label">变量名</label>
           <input type="text" id="novel-variable" class="novel-input" placeholder="current_chapter">
-          <label class="novel-label novel-label-inline">角色</label>
+          <label class="novel-label novel-label-inline">注入角色</label>
           <select id="novel-role" class="novel-input novel-input-narrow">
             <option value="system">system</option>
             <option value="user">user</option>
             <option value="assistant">assistant</option>
           </select>
+          <span class="status">决定「📖小说当前段落」以什么角色发送</span>
+        </div>
+        <div class="novel-row">
+          <label class="novel-label">读完仍注入</label>
+          <input type="checkbox" id="novel-empty" class="checkbox">
+          <span class="status">小说读完且未开循环时，是否仍注入空的小说条目（默认否，即自动停止注入）</span>
         </div>
         <div class="novel-row">
           <button class="primary" id="novel-save">保存小说设置</button>
@@ -402,7 +408,7 @@
         if (isNovel) {
           const badge = document.createElement('div');
           badge.className = 'num';
-          badge.textContent = '动态内容：由小说进度填充';
+          badge.textContent = '动态内容：由小说进度填充，角色/开关请在「小说」标签设置';
           nameTd.appendChild(badge);
         }
 
@@ -659,6 +665,7 @@
       novelEl('novel-entry').checked = !!config.entry_enabled;
       novelEl('novel-variable').value = config.variable_name || 'current_chapter';
       novelEl('novel-role').value = config.role || 'system';
+      novelEl('novel-empty').checked = !!config.inject_when_empty;
 
       const fileSelect = novelEl('novel-file');
       fileSelect.innerHTML = '';
@@ -743,6 +750,7 @@
         entry_enabled: novelEl('novel-entry').checked,
         variable_name: novelEl('novel-variable').value.trim() || 'current_chapter',
         role: novelEl('novel-role').value,
+        inject_when_empty: novelEl('novel-empty').checked,
       };
     }
 
