@@ -413,9 +413,20 @@ def _split_before_last_user(
     """把对话块拆成「历史」「本轮新输入」「新输入之后的收尾」三段。
 
     MoFox 的 payload 顺序是：历史(user) → 上轮回复(assistant) → 工具结果 →
-    __SUSPEND__(assistant) → 本轮新输入(user)。最后一条 user 就是本轮新输入，
-    它后面的 assistant/tool_result（例如 __SUSPEND__）属于对话收尾，必须留在
-    对话块末尾，否则会被追加到请求最后、把预填充隔开。
+    __SUSPEND__(assistant) → 本轮新输入(user)。最后一条 user 就是本轮新输入；
+    它**之前**的「上轮回复 + 工具调用 + 工具结果 + __SUSPEND__」都属于历史
+    侧，必须跟着历史一起输出，否则会被夹在中间的预填充条目（ass / jailbreak）
+    隔开，跑到请求末尾去。
+
+    所以这里以最后一条 user 为界：
+
+    * 历史 = 最后一条 user 之前的**全部** payload（含 assistant / tool_result）
+    * 本轮新输入 = 最后一条 user
+    * 收尾 = 最后一条 user 之后剩余的 payload
+
+    特殊情形：第一轮请求里 MoFox 把「历史 + 本轮新消息」拼进同一条 user
+    payload（``build_user_prompt`` 的 history + unreads），这时整块都算本轮
+    新输入，历史部分为空——返回 ``([], 整块, [])``。
 
     找不到 user 时返回 ``(整个对话块, [], [])``。
     """
@@ -426,14 +437,15 @@ def _split_before_last_user(
     if last_user < 0:
         return list(convo_block), [], []
 
-    tail: list[Any] = [convo_block[last_user]]
-    index = last_user + 1
-    while index < len(convo_block) and str(
-        getattr(convo_block[index], "role", "")
-    ) in (str(ROLE.ASSISTANT), str(ROLE.TOOL_RESULT)):
-        tail.append(convo_block[index])
-        index += 1
-    return list(convo_block[:last_user]), tail, list(convo_block[index:])
+    if last_user == 0:
+        # 只有一条 user（历史与本轮新消息已合并）→ 整块都算本轮新输入。
+        return [], list(convo_block), []
+
+    return (
+        list(convo_block[:last_user]),
+        [convo_block[last_user]],
+        list(convo_block[last_user + 1 :]),
+    )
 
 
 def _inject_ordered_setvar_payloads(
@@ -486,13 +498,17 @@ def _inject_ordered_setvar_payloads(
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
     # 对话块拆成三段，各自按顺序表里的位置插入：
-    #   mofox_user      → 历史（此前发生的事情 + 上轮回复 + 工具调用）
+    #   mofox_user      → 历史（此前发生的事情 + 上轮回复 + 工具调用 + 工具结果）
     #   mofox_new_input → 本轮新输入
-    #   after_part      → 新输入之后的收尾（如 __SUSPEND__），永远留在对话末尾
+    #   after_part      → 新输入之后的收尾（如 __SUSPEND__），紧跟对话块
     history_part, tail_part, after_part = _split_before_last_user(convo_block)
     output: list[Any] = []
     used: set[str] = set()
     preset_names: dict[int, str] = {}
+    # 收尾 payload 要贴在对话块后面，因此记住「新输入」的位置；没有新输入时
+    # 退回历史的位置。
+    new_input_at: int | None = None
+    history_at: int | None = None
 
     def append_preset(identifier: str, item: dict[str, Any]) -> None:
         preset_names[len(output)] = str(item.get("name", "") or identifier)
@@ -515,10 +531,12 @@ def _inject_ordered_setvar_payloads(
             continue
         if identifier == "mofox_user":
             output.extend(history_part)
+            history_at = len(output)
             used.add(identifier)
             continue
         if identifier == NEW_INPUT_ENTRY_ID:
             output.extend(tail_part)
+            new_input_at = len(output)
             used.add(identifier)
             continue
 
@@ -539,13 +557,18 @@ def _inject_ordered_setvar_payloads(
         output.extend(function_block)
     if "mofox_user" not in used:
         output.extend(history_part)
+        history_at = len(output)
     if NEW_INPUT_ENTRY_ID not in used:
         output.extend(tail_part)
+        new_input_at = len(output)
 
-    # 新输入之后的收尾（__SUSPEND__ 等）永远贴在对话末尾，
-    # 避免它被甩到请求最后、把预填充隔开。
+    # 新输入之后的收尾（__SUSPEND__ 等）永远紧贴对话块：有新输入就贴在新输入
+    # 之后，否则贴在历史之后。避免它被甩到请求最后、把预填充隔开。
     if after_part:
-        output.extend(after_part)
+        anchor = new_input_at if new_input_at is not None else history_at
+        if anchor is None:
+            anchor = len(output)
+        output[anchor:anchor] = after_part
 
     payloads[:] = output
     _merge_adjacent_same_role(payloads)

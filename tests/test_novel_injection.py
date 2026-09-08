@@ -778,6 +778,73 @@ def prepare_conversation_fixture(tmp_path: Path) -> None:
     )
 
 
+def test_reply_and_tool_stay_with_history_before_prefill(tmp_path: Path) -> None:
+    """用户日志场景：回复/工具结果/__SUSPEND__ 必须紧贴历史，排在预填充之前。
+
+    顺序表为 ``… mofox_user, mofox_new_input, ass, jailbreak, mofox_tool``，
+    也就是预填充排在「新输入」之后。此时「上轮回复 + 工具结果 + __SUSPEND__」
+    不能跟着新输入被甩到预填充后面，必须留在历史一侧。
+    """
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    data["mofox_order"] = [
+        "mofox_system",
+        "mofox_user",
+        NEW_INPUT_ENTRY_ID,
+        "prefill",
+        "tail",
+        "mofox_tool",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+    texts = [
+        "".join(
+            part.text
+            if isinstance(part, Text)
+            else str(getattr(part, "value", part))
+            for part in payload.content
+        )
+        for payload in payloads
+    ]
+    index_of = lambda needle: next(  # noqa: E731
+        index for index, text in enumerate(texts) if needle in text
+    )
+
+    assert (
+        index_of("系统上下文")
+        < index_of("上轮回复")
+        < index_of("已发送消息")
+        < index_of("__SUSPEND__")
+        < index_of("本轮新输入")
+    ), f"回复/工具结果没有紧贴历史：{texts}"
+    # 整段对话都排在预填充（ass预设）之前
+    assert index_of("本轮新输入") < index_of("明白了。"), f"新输入被甩到预填充后：{texts}"
+
+    # 角色序列仍然合法：assistant 紧跟在 user / tool_result 之后
+    convo_roles = [
+        str(payload.role)
+        for payload in payloads
+        if str(payload.role)
+        in (str(ROLE.USER), str(ROLE.ASSISTANT), str(ROLE.TOOL_RESULT))
+    ]
+    assert ",".join(convo_roles) == ",".join(
+        [
+            str(ROLE.USER),
+            str(ROLE.ASSISTANT),
+            str(ROLE.TOOL_RESULT),
+            str(ROLE.ASSISTANT),
+            str(ROLE.USER),
+            str(ROLE.ASSISTANT),
+            str(ROLE.USER),
+        ]
+    ), f"角色序列不合法：{convo_roles}"
+
+
 def test_conversation_macro_contains_tool_calls(tmp_path: Path) -> None:
     """预设条目里的 {{mofox_conversation}} 要包含回复、工具调用与工具结果。"""
     prepare_conversation_fixture(tmp_path)
