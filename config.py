@@ -132,19 +132,47 @@ class TavernRegexConfig(BaseConfig):
             ),
         )
         user_block_position: Literal[
-            "auto", "before_last_user", "after_system", "end"
+            "auto", "strict", "before_last_user", "head_tail", "after_system", "end"
         ] = Field(
             default="auto",
             description=(
                 "「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + "
                 "本轮新输入）放在请求的什么位置。\n"
                 "auto：完全按 WebUI 顺序表（mofox_order）里拖到的位置；\n"
+                "strict：严格按顺序表——系统提示词与工具声明保持在顺序表位置，"
+                "顺序表里的 mofox_user 只代表「本轮新输入」，历史部分放在第一个"
+                "预设之前；\n"
                 "before_last_user：预设条目排在「历史 + 本轮新输入」之后——"
                 "历史/上轮回复/工具调用 → 本轮新输入 → 预设条目；\n"
+                "head_tail：头部预填充预设 → 系统提示词 → 历史 → 本轮新输入 → "
+                "其余预设条目 → 工具声明（头部内容见 head_preset_text）；\n"
                 "after_system：紧跟系统提示词之后、所有酒馆预设之前；\n"
                 "end：固定放在请求最后。"
             ),
-            choices=["auto", "before_last_user", "after_system", "end"],
+            choices=[
+                "auto",
+                "strict",
+                "before_last_user",
+                "head_tail",
+                "after_system",
+                "end",
+            ],
+        )
+        head_preset_text: str = Field(
+            default="",
+            description=(
+                "「头部预填充预设」的内容，仅 user_block_position=head_tail 时生效。\n"
+                "它会被注入到整个请求的最前面（在 MoFox 系统提示词之前）。\n"
+                "留空则不注入头部条目。支持 {{setvar::}} / {{getvar::}} 等宏。"
+            ),
+        )
+        head_preset_role: Literal["user", "system", "assistant"] = Field(
+            default="user",
+            description=(
+                "头部预填充预设的角色。\n"
+                "user 最稳（assistant 不能出现在对话开头，system 也能通过校验）。"
+            ),
+            choices=["user", "system", "assistant"],
         )
         filter_mode: Literal["disabled", "blacklist", "whitelist"] = Field(
             default="disabled",

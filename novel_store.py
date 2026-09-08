@@ -315,12 +315,18 @@ NOVEL_RUNTIME_KEYS: tuple[str, ...] = (
 )
 
 # 预设顺序相关的运行时设置（同样存在 novel/config.json，由 WebUI 保存）
-BLOCK_RUNTIME_KEYS: tuple[str, ...] = ("user_block_position",)
+BLOCK_RUNTIME_KEYS: tuple[str, ...] = (
+    "user_block_position",
+    "head_preset_text",
+    "head_preset_role",
+)
 
 ALL_RUNTIME_KEYS: tuple[str, ...] = NOVEL_RUNTIME_KEYS + BLOCK_RUNTIME_KEYS
 
 _BLOCK_DEFAULTS: dict[str, Any] = {
     "user_block_position": "auto",
+    "head_preset_text": "",
+    "head_preset_role": "user",
 }
 
 _NOVEL_DEFAULTS: dict[str, Any] = {
@@ -374,9 +380,15 @@ def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     merged["user_block_position"] = (
         str(merged["user_block_position"])
         if str(merged["user_block_position"])
-        in ("auto", "before_last_user", "after_system", "end")
+        in ("auto", "strict", "before_last_user", "head_tail", "after_system", "end")
         else "auto"
     )
+    merged["head_preset_role"] = (
+        str(merged["head_preset_role"])
+        if str(merged["head_preset_role"]) in ("user", "system", "assistant")
+        else "user"
+    )
+    merged["head_preset_text"] = str(merged["head_preset_text"] or "")
     return merged
 
 

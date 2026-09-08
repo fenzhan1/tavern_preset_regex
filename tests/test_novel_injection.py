@@ -607,6 +607,57 @@ def test_conversation_block_stays_contiguous(tmp_path: Path) -> None:
     assert assistant_with_tools, "带工具调用的 assistant 丢了"
 
 
+def test_user_block_position_head_tail(tmp_path: Path) -> None:
+    """head_tail：头部预填充 → 系统 → 历史 → 新输入 → 预设 → 工具声明。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    plugin.config.plugin.user_block_position = "head_tail"
+    plugin.config.plugin.head_preset_text = "头部预填充预设内容"
+    plugin.config.plugin.head_preset_role = "user"
+
+    payloads = run_request_with(plugin, real_like_payloads())
+    roles = [str(payload.role) for payload in payloads]
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+
+    # 第 0 条就是头部预填充，且角色为 user
+    assert "头部预填充预设内容" in texts[0], f"头部预填充没有排在最前：{roles}"
+    assert roles[0] == str(ROLE.USER), f"头部预填充角色不对：{roles}"
+    # 紧接着是系统提示词
+    assert "MoFox 系统提示词" in texts[1], f"系统提示词位置不对：{roles}"
+
+    index_of = lambda needle: next(
+        index for index, text in enumerate(texts) if needle in text
+    )
+    suspend_index = index_of("__SUSPEND__")
+    new_input_index = index_of("本轮新输入")
+    prefill_index = index_of("明白了。")
+    tail_index = index_of("然后直接开始输出")
+
+    assert 1 < index_of("系统上下文") < suspend_index, f"历史位置不对：{roles}"
+    assert suspend_index < new_input_index < prefill_index < tail_index, (
+        f"尾部顺序不对：{roles}"
+    )
+    assert roles[prefill_index] == str(ROLE.ASSISTANT), f"预填充被降级：{roles}"
+
+
+def test_head_tail_without_head_text(tmp_path: Path) -> None:
+    """head_preset_text 留空时不注入头部条目。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    plugin.config.plugin.user_block_position = "head_tail"
+    plugin.config.plugin.head_preset_text = ""
+
+    payloads = run_request_with(plugin, real_like_payloads())
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+    assert "MoFox 系统提示词" in texts[0], f"第一条应是系统提示词：{texts[0][:40]}"
+
+
 def test_user_block_position_before_last_user(tmp_path: Path) -> None:
     """before_last_user：预设条目排在历史与本轮新输入之后。"""
     prepare_block_fixture(tmp_path)

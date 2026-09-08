@@ -15,7 +15,7 @@ from src.kernel.event import EventDecision
 
 from .config import TavernRegexConfig
 from .engine import apply_rules
-from .tavern_store import TavernDataService
+from .tavern_store import TavernDataService, _render_tavern_macros
 
 logger = get_logger("tavern_preset_regex")
 
@@ -438,13 +438,25 @@ def _inject_ordered_setvar_payloads(
     }
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
+    strict_mode = (
+        str(getattr(config.plugin, "user_block_position", "auto") or "auto") == "strict"
+        if config is not None
+        else False
+    )
+    history_part, tail_part = _split_before_last_user(convo_block)
     output: list[Any] = []
     used: set[str] = set()
     preset_names: dict[int, str] = {}
     # 对话块插入点：相对「固定块 + 预设」序列的下标。
     convo_anchor: int | None = None
+    # strict 模式：历史部分插在第一条预设之前。
+    history_inserted = False
 
     def append_preset(identifier: str, item: dict[str, Any]) -> None:
+        nonlocal history_inserted
+        if strict_mode and not history_inserted:
+            output.extend(history_part)
+            history_inserted = True
         preset_names[len(output)] = str(item.get("name", "") or identifier)
         output.append(
             _build_setvar_payload(
@@ -486,27 +498,69 @@ def _inject_ordered_setvar_payloads(
     if "mofox_tool" not in used:
         output.extend(function_block)
 
+    if strict_mode:
+        if not history_inserted:
+            # 没有预设条目时，历史直接跟在系统块后面。
+            output[len(system_block) : len(system_block)] = history_part
+        if tail_part:
+            output.extend(tail_part)
+
     if convo_block:
         position = (
             str(getattr(config.plugin, "user_block_position", "auto") or "auto")
             if config is not None
             else "auto"
         )
-        if position == "before_last_user":
-            # 预设条目排在「历史 + 本轮新输入」之后：
-            # 历史/上轮回复/工具调用 → 本轮新输入 → 预设条目（assistant 预填充、自定义 user）。
-            # 这样预填充仍在本轮新输入之后，模型看到的是「刚收到消息 → 预填充」。
-            history_part, tail_part = _split_before_last_user(convo_block)
-            preset_items = [
-                payload
-                for payload in output
-                if str(getattr(payload, "role", ""))
-                not in (
-                    str(ROLE.SYSTEM),
-                    str(ROLE.TOOL),
+        history_part, tail_part = _split_before_last_user(convo_block)
+        preset_items = [
+            payload
+            for payload in output
+            if str(getattr(payload, "role", ""))
+            not in (str(ROLE.SYSTEM), str(ROLE.TOOL))
+        ]
+
+        if position == "strict":
+            # 已在上面按顺序表放好：系统块/工具块保持原位，历史在第一条预设之前，
+            # 本轮新输入在末尾。
+            pass
+        elif position == "head_tail":
+            # 头部预填充预设 → 系统提示词 → 历史 → 本轮新输入 → 其余预设 → 工具声明。
+            head_item: list[Any] = []
+            head_text = str(settings.get("head_preset_text", "") or "").strip()
+            if head_text:
+                rendered_head = _render_tavern_macros(
+                    head_text,
+                    {},
+                    bot_name="",
+                    conversation=conversation_text,
                 )
+                if rendered_head:
+                    head_item = [
+                        _build_setvar_payload(
+                            _tavern_role_to_role(settings.get("head_preset_role")),
+                            rendered_head,
+                        )
+                    ]
+            output = [
+                *head_item,
+                *system_block,
+                *history_part,
+                *tail_part,
+                *preset_items,
+                *function_block,
             ]
-            new_output = [
+            preset_names = {
+                len(head_item)
+                + len(system_block)
+                + len(history_part)
+                + len(tail_part)
+                + index: name
+                for index, name in enumerate(preset_names.values())
+            }
+        elif position == "before_last_user":
+            # 预设条目排在「历史 + 本轮新输入」之后：
+            # 历史/上轮回复/工具调用 → 本轮新输入 → 预设条目。
+            output = [
                 *system_block,
                 *history_part,
                 *tail_part,
@@ -517,45 +571,42 @@ def _inject_ordered_setvar_payloads(
                 len(system_block) + len(history_part) + len(tail_part) + index: name
                 for index, name in enumerate(preset_names.values())
             }
-            output = new_output
-        elif position == "after_system":
-            # 紧跟 system / tool 固定块之后、所有预设之前：
-            # 这样「上轮回复 + 工具调用」跟着系统上下文一起出现，
-            # 而后面的预设条目（如 assistant 预填充）仍然排在最后。
-            insert_at = 0
-            for index, payload in enumerate(output):
-                if str(getattr(payload, "role", "")) in (
-                    str(ROLE.SYSTEM),
-                    str(ROLE.TOOL),
-                ):
-                    insert_at = index + 1
-            output[insert_at:insert_at] = convo_block
-        elif position == "end":
-            insert_at = len(output)
-            output.extend(convo_block)
         else:
-            # auto：按顺序表里拖到的位置插入（未出现在顺序表则放末尾）；
-            # 若该位置前面还有 system/tool 固定块（例如缺失的 tool 被补到
-            # 末尾），则把对话块放到这些固定块之后，保证它不夹在固定块中间。
-            insert_at = convo_anchor if convo_anchor is not None else len(output)
-            insert_at = min(insert_at, len(output))
-            fixed_end = 0
-            for index, payload in enumerate(output[:insert_at]):
-                if str(getattr(payload, "role", "")) in (
-                    str(ROLE.SYSTEM),
-                    str(ROLE.TOOL),
-                ):
-                    fixed_end = index + 1
-            insert_at = max(fixed_end, insert_at)
-            output[insert_at:insert_at] = convo_block
+            if position == "after_system":
+                # 紧跟 system / tool 固定块之后、所有预设之前。
+                insert_at = 0
+                for index, payload in enumerate(output):
+                    if str(getattr(payload, "role", "")) in (
+                        str(ROLE.SYSTEM),
+                        str(ROLE.TOOL),
+                    ):
+                        insert_at = index + 1
+                output[insert_at:insert_at] = convo_block
+            elif position == "end":
+                insert_at = len(output)
+                output.extend(convo_block)
+            else:
+                # auto：按顺序表里拖到的位置插入（未出现在顺序表则放末尾）；
+                # 若该位置前面还有 system/tool 固定块（例如缺失的 tool 被补到
+                # 末尾），则把对话块放到这些固定块之后。
+                insert_at = convo_anchor if convo_anchor is not None else len(output)
+                insert_at = min(insert_at, len(output))
+                fixed_end = 0
+                for index, payload in enumerate(output[:insert_at]):
+                    if str(getattr(payload, "role", "")) in (
+                        str(ROLE.SYSTEM),
+                        str(ROLE.TOOL),
+                    ):
+                        fixed_end = index + 1
+                insert_at = max(fixed_end, insert_at)
+                output[insert_at:insert_at] = convo_block
 
-        # 对话块插入后，后面的预设条目下标整体后移，日志里的条目名要对齐。
-        # before_last_user 分支已在上面处理过，这里跳过。
-        if position != "before_last_user" and insert_at < len(output):
-            preset_names = {
-                index + len(convo_block) if index >= insert_at else index: name
-                for index, name in preset_names.items()
-            }
+            # 对话块插入后，后面的预设条目下标整体后移，日志里的条目名要对齐。
+            if insert_at < len(output):
+                preset_names = {
+                    index + len(convo_block) if index >= insert_at else index: name
+                    for index, name in preset_names.items()
+                }
 
     payloads[:] = output
     return _demote_invalid_assistant_payloads(payloads, preset_names)
