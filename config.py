@@ -139,8 +139,8 @@ class TavernRegexConfig(BaseConfig):
                 "「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + "
                 "本轮新输入）放在请求的什么位置。\n"
                 "auto：完全按 WebUI 顺序表（mofox_order）里拖到的位置；\n"
-                "before_last_user：预设条目插进对话块内部——"
-                "历史/上轮回复/工具调用 → 预设条目 → 本轮新输入；\n"
+                "before_last_user：预设条目排在「历史 + 本轮新输入」之后——"
+                "历史/上轮回复/工具调用 → 本轮新输入 → 预设条目；\n"
                 "after_system：紧跟系统提示词之后、所有酒馆预设之前；\n"
                 "end：固定放在请求最后。"
             ),

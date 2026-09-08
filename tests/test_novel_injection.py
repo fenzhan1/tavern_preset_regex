@@ -608,7 +608,7 @@ def test_conversation_block_stays_contiguous(tmp_path: Path) -> None:
 
 
 def test_user_block_position_before_last_user(tmp_path: Path) -> None:
-    """before_last_user：预设条目插在历史与本轮新输入之间。"""
+    """before_last_user：预设条目排在历史与本轮新输入之后。"""
     prepare_block_fixture(tmp_path)
     plugin = make_plugin(tmp_path, enabled=False)
     plugin.config.plugin.user_block_position = "before_last_user"
@@ -624,13 +624,14 @@ def test_user_block_position_before_last_user(tmp_path: Path) -> None:
         index for index, text in enumerate(texts) if needle in text
     )
     suspend_index = index_of("__SUSPEND__")
+    new_input_index = index_of("本轮新输入")
     prefill_index = index_of("明白了。")
     tail_index = index_of("然后直接开始输出")
-    new_input_index = index_of("本轮新输入")
 
-    # 历史（含上轮回复与工具结果）→ 预填充 → 本轮新输入
-    assert suspend_index < prefill_index, f"预填充没有排在历史之后：{roles}"
-    assert prefill_index < tail_index < new_input_index, f"顺序不对：{roles}"
+    # 历史（含上轮回复与工具结果）→ 本轮新输入 → 预填充 → 自定义 user
+    assert suspend_index < new_input_index, f"本轮新输入没有紧跟历史：{roles}"
+    assert new_input_index < prefill_index, f"预填充没有排在本轮新输入之后：{roles}"
+    assert prefill_index < tail_index, f"自定义 user 没有排在预填充之后：{roles}"
     # 历史块内部保持 上下文→回复→工具结果→SUSPEND 连续
     assert roles[1:5] == [
         str(ROLE.USER),
@@ -638,6 +639,8 @@ def test_user_block_position_before_last_user(tmp_path: Path) -> None:
         str(ROLE.TOOL_RESULT),
         str(ROLE.ASSISTANT),
     ], f"历史块被打散：{roles}"
+    # 预填充保持 assistant 角色（前面是本轮新输入）
+    assert roles[prefill_index] == str(ROLE.ASSISTANT), f"预填充被降级：{roles}"
 
 
 def test_user_block_position_after_system(tmp_path: Path) -> None:

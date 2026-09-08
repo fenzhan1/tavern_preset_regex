@@ -493,7 +493,9 @@ def _inject_ordered_setvar_payloads(
             else "auto"
         )
         if position == "before_last_user":
-            # 预设条目插进对话块内部：历史/上轮回复/工具调用 → 预设条目 → 本轮新输入。
+            # 预设条目排在「历史 + 本轮新输入」之后：
+            # 历史/上轮回复/工具调用 → 本轮新输入 → 预设条目（assistant 预填充、自定义 user）。
+            # 这样预填充仍在本轮新输入之后，模型看到的是「刚收到消息 → 预填充」。
             history_part, tail_part = _split_before_last_user(convo_block)
             preset_items = [
                 payload
@@ -507,12 +509,12 @@ def _inject_ordered_setvar_payloads(
             new_output = [
                 *system_block,
                 *history_part,
+                *tail_part,
                 *preset_items,
                 *function_block,
-                *tail_part,
             ]
             preset_names = {
-                len(system_block) + len(history_part) + index: name
+                len(system_block) + len(history_part) + len(tail_part) + index: name
                 for index, name in enumerate(preset_names.values())
             }
             output = new_output
