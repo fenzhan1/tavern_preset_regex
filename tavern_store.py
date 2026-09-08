@@ -680,11 +680,15 @@ class TavernDataService:
 
         prompt_ids = TavernDataService._prompt_identifiers(payload)
         if not order:
+            # 旧数据没有 mofox_order 时，按「系统提示词 → 用户上下文(历史) →
+            # 本轮新输入 → 预设 → 工具」给出默认顺序。历史必须排在预设之前，
+            # 否则上轮回复/工具结果会被甩到请求末尾。
             order = [
                 "mofox_system",
+                "mofox_user",
+                NEW_INPUT_ENTRY_ID,
                 *prompt_ids,
                 "mofox_tool",
-                "mofox_user",
             ]
 
         if append_missing:

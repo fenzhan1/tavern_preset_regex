@@ -778,6 +778,52 @@ def prepare_conversation_fixture(tmp_path: Path) -> None:
     )
 
 
+def test_missing_mofox_order_keeps_history_before_presets(tmp_path: Path) -> None:
+    """setvar.json 没有 mofox_order 时，历史不能被排到预设后面。
+
+    这是用户实际踩到的坑：机器人实例的 setvar.json 是旧数据、没有
+    ``mofox_order``，回退顺序把 mofox_user / mofox_new_input 追加到末尾，
+    于是「上轮回复 + 工具结果 + 新输入」全被甩到请求最后。
+    """
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    data.pop("mofox_order", None)  # 模拟旧数据
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    service = make_service(tmp_path)
+    order = service.resolve_mofox_order()
+    assert order.index("mofox_user") < order.index("prefill"), (
+        f"历史被排到预设之后：{order}"
+    )
+    assert order.index(NEW_INPUT_ENTRY_ID) < order.index("prefill"), (
+        f"新输入被排到预设之后：{order}"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = run_request_with(plugin, real_like_payloads())
+    texts = [
+        "".join(
+            part.text if isinstance(part, Text) else str(getattr(part, "value", part))
+            for part in payload.content
+        )
+        for payload in payloads
+    ]
+    index_of = lambda needle: next(  # noqa: E731
+        index for index, text in enumerate(texts) if needle in text
+    )
+    assert (
+        index_of("系统上下文")
+        < index_of("上轮回复")
+        < index_of("已发送消息")
+        < index_of("__SUSPEND__")
+        < index_of("本轮新输入")
+        < index_of("明白了。")
+    ), f"回退顺序下对话块没排好：{texts}"
+
+
 def test_reply_and_tool_stay_with_history_before_prefill(tmp_path: Path) -> None:
     """用户日志场景：回复/工具结果/__SUSPEND__ 必须紧贴历史，排在预填充之前。
 
