@@ -185,6 +185,25 @@ def test_resolve_file_rejects_path_traversal(tmp_path: Path) -> None:
         service.resolve_file("../setvar.json")
 
 
+def test_list_files_skips_readme(tmp_path: Path) -> None:
+    """novel/ 里的 README.md 是说明文件，不能当成小说。"""
+    write_novel(tmp_path)
+    (tmp_path / "novel" / "README.md").write_text("目录说明", encoding="utf-8")
+    service = NovelService(tmp_path / "novel")
+    names = [item["name"] for item in service.list_files()]
+    assert names == ["demo.txt"]
+
+
+def test_active_file_ignores_readme_only_dir(tmp_path: Path) -> None:
+    """目录里只有 README 时应视为没有小说，而不是把 README 当正文。"""
+    novel_dir = tmp_path / "novel"
+    novel_dir.mkdir(parents=True)
+    (novel_dir / "README.md").write_text("说明", encoding="utf-8")
+    service = make_service(tmp_path, enabled=True)
+    assert service.active_novel_file() == ""
+    assert service.novel_state("s")["total"] == 0
+
+
 # ----- 设置 -----
 
 

@@ -32,6 +32,9 @@ NOVEL_SUFFIXES = (".txt", ".md")
 DEFAULT_STREAM_KEY = "default"
 MAX_TEXT_BYTES = 64 * 1024 * 1024
 
+# novel/ 目录里的说明文件不算小说正文
+_SKIP_FILE_STEMS = frozenset(("readme", "readme.cn", "说明", "index"))
+
 SplitMode = Literal["auto", "chapter", "char", "line"]
 
 # —— 中文小说章节标题识别 ——
@@ -397,11 +400,16 @@ class NovelService:
         self.novel_dir.mkdir(parents=True, exist_ok=True)
 
     def list_files(self) -> list[dict[str, Any]]:
-        """列出 ``novel/`` 下的小说文件。"""
+        """列出 ``novel/`` 下的小说文件。
+
+        自动跳过目录说明文件（``README.md`` 等），避免它被当成小说正文。
+        """
         self.ensure_dir()
         items: list[dict[str, Any]] = []
         for path in sorted(self.novel_dir.iterdir()):
             if not path.is_file() or path.suffix.lower() not in NOVEL_SUFFIXES:
+                continue
+            if path.stem.lower() in _SKIP_FILE_STEMS:
                 continue
             stat = path.stat()
             items.append(
