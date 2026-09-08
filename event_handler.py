@@ -409,18 +409,31 @@ def _merge_adjacent_same_role(payloads: list[Any]) -> None:
 
 def _split_before_last_user(
     convo_block: list[Any],
-) -> tuple[list[Any], list[Any]]:
-    """把对话块按最后一条 user 消息拆成「历史」与「本轮新输入」两段。
+) -> tuple[list[Any], list[Any], list[Any]]:
+    """把对话块拆成「历史」「本轮新输入」「新输入之后的收尾」三段。
 
-    找不到 user 时返回 ``(整个对话块, [])``。
+    MoFox 的 payload 顺序是：历史(user) → 上轮回复(assistant) → 工具结果 →
+    __SUSPEND__(assistant) → 本轮新输入(user)。最后一条 user 就是本轮新输入，
+    它后面的 assistant/tool_result（例如 __SUSPEND__）属于对话收尾，必须留在
+    对话块末尾，否则会被追加到请求最后、把预填充隔开。
+
+    找不到 user 时返回 ``(整个对话块, [], [])``。
     """
     last_user = -1
     for index, payload in enumerate(convo_block):
         if str(getattr(payload, "role", "")) == str(ROLE.USER):
             last_user = index
     if last_user < 0:
-        return list(convo_block), []
-    return list(convo_block[:last_user]), list(convo_block[last_user:])
+        return list(convo_block), [], []
+
+    tail: list[Any] = [convo_block[last_user]]
+    index = last_user + 1
+    while index < len(convo_block) and str(
+        getattr(convo_block[index], "role", "")
+    ) in (str(ROLE.ASSISTANT), str(ROLE.TOOL_RESULT)):
+        tail.append(convo_block[index])
+        index += 1
+    return list(convo_block[:last_user]), tail, list(convo_block[index:])
 
 
 def _inject_ordered_setvar_payloads(
@@ -472,10 +485,11 @@ def _inject_ordered_setvar_payloads(
     }
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
-    # 对话块拆成「历史」与「本轮新输入」两条，各自按顺序表里的位置插入：
-    #   mofox_user      → 历史（含上轮回复、工具调用、工具结果）
+    # 对话块拆成三段，各自按顺序表里的位置插入：
+    #   mofox_user      → 历史（此前发生的事情 + 上轮回复 + 工具调用）
     #   mofox_new_input → 本轮新输入
-    history_part, tail_part = _split_before_last_user(convo_block)
+    #   after_part      → 新输入之后的收尾（如 __SUSPEND__），永远留在对话末尾
+    history_part, tail_part, after_part = _split_before_last_user(convo_block)
     output: list[Any] = []
     used: set[str] = set()
     preset_names: dict[int, str] = {}
@@ -527,6 +541,11 @@ def _inject_ordered_setvar_payloads(
         output.extend(history_part)
     if NEW_INPUT_ENTRY_ID not in used:
         output.extend(tail_part)
+
+    # 新输入之后的收尾（__SUSPEND__ 等）永远贴在对话末尾，
+    # 避免它被甩到请求最后、把预填充隔开。
+    if after_part:
+        output.extend(after_part)
 
     payloads[:] = output
     _merge_adjacent_same_role(payloads)

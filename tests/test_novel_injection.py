@@ -712,6 +712,46 @@ def test_new_input_merges_with_adjacent_history(tmp_path: Path) -> None:
     )
 
 
+def test_trailing_suspend_stays_with_conversation(tmp_path: Path) -> None:
+    """新输入之后的 __SUSPEND__ 必须留在对话末尾，不能被甩到请求最后。"""
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    data["mofox_order"] = [
+        "mofox_system",
+        "mofox_user",
+        NEW_INPUT_ENTRY_ID,
+        "prefill",
+        "tail",
+        "mofox_tool",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    # 对话块以 assistant(__SUSPEND__) 结尾，新输入夹在中间
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text("MoFox 系统提示词")]),
+        LLMPayload(ROLE.TOOL, [Text("工具声明")]),
+        LLMPayload(ROLE.USER, [Text("系统上下文：conversation_context")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("上轮回复")]),
+        LLMPayload(ROLE.USER, [Text("本轮新输入：latest_events")]),
+        LLMPayload(ROLE.ASSISTANT, [Text("__SUSPEND__")]),
+    ]
+    result = run_request_with(plugin, payloads)
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in result
+    ]
+    index_of = lambda needle: next(  # noqa: E731
+        index for index, text in enumerate(texts) if needle in text
+    )
+    # 历史 → 新输入 → __SUSPEND__ 连续，收尾排在预填充之前
+    assert index_of("系统上下文") < index_of("本轮新输入") < index_of("__SUSPEND__")
+    assert index_of("__SUSPEND__") < index_of("明白了。"), f"收尾被甩到最后：{texts}"
+
+
 # ----- {{mofox_conversation}} 宏 -----
 
 
