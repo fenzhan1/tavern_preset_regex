@@ -607,6 +607,39 @@ def test_conversation_block_stays_contiguous(tmp_path: Path) -> None:
     assert assistant_with_tools, "带工具调用的 assistant 丢了"
 
 
+def test_user_block_position_before_last_user(tmp_path: Path) -> None:
+    """before_last_user：预设条目插在历史与本轮新输入之间。"""
+    prepare_block_fixture(tmp_path)
+    plugin = make_plugin(tmp_path, enabled=False)
+    plugin.config.plugin.user_block_position = "before_last_user"
+
+    payloads = run_request_with(plugin, real_like_payloads())
+    roles = [str(payload.role) for payload in payloads]
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+
+    index_of = lambda needle: next(
+        index for index, text in enumerate(texts) if needle in text
+    )
+    suspend_index = index_of("__SUSPEND__")
+    prefill_index = index_of("明白了。")
+    tail_index = index_of("然后直接开始输出")
+    new_input_index = index_of("本轮新输入")
+
+    # 历史（含上轮回复与工具结果）→ 预填充 → 本轮新输入
+    assert suspend_index < prefill_index, f"预填充没有排在历史之后：{roles}"
+    assert prefill_index < tail_index < new_input_index, f"顺序不对：{roles}"
+    # 历史块内部保持 上下文→回复→工具结果→SUSPEND 连续
+    assert roles[1:5] == [
+        str(ROLE.USER),
+        str(ROLE.ASSISTANT),
+        str(ROLE.TOOL_RESULT),
+        str(ROLE.ASSISTANT),
+    ], f"历史块被打散：{roles}"
+
+
 def test_user_block_position_after_system(tmp_path: Path) -> None:
     """after_system：对话块紧跟系统提示词，排在所有预设之前。"""
     prepare_block_fixture(tmp_path)

@@ -131,17 +131,20 @@ class TavernRegexConfig(BaseConfig):
                 "只处理这些 LLM request_name；留空时使用默认主回复 chatter 名称。"
             ),
         )
-        user_block_position: Literal["auto", "after_system", "end"] = Field(
+        user_block_position: Literal[
+            "auto", "before_last_user", "after_system", "end"
+        ] = Field(
             default="auto",
             description=(
                 "「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + "
                 "本轮新输入）放在请求的什么位置。\n"
                 "auto：完全按 WebUI 顺序表（mofox_order）里拖到的位置；\n"
-                "after_system：紧跟系统提示词之后、所有酒馆预设之前，"
-                "让上一轮回复与工具调用跟着系统上下文一起出现；\n"
+                "before_last_user：预设条目插进对话块内部——"
+                "历史/上轮回复/工具调用 → 预设条目 → 本轮新输入；\n"
+                "after_system：紧跟系统提示词之后、所有酒馆预设之前；\n"
                 "end：固定放在请求最后。"
             ),
-            choices=["auto", "after_system", "end"],
+            choices=["auto", "before_last_user", "after_system", "end"],
         )
         filter_mode: Literal["disabled", "blacklist", "whitelist"] = Field(
             default="disabled",

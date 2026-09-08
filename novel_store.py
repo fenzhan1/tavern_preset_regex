@@ -373,7 +373,8 @@ def normalize_novel_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     merged["chapter_pattern"] = str(merged["chapter_pattern"] or "")
     merged["user_block_position"] = (
         str(merged["user_block_position"])
-        if str(merged["user_block_position"]) in ("auto", "after_system", "end")
+        if str(merged["user_block_position"])
+        in ("auto", "before_last_user", "after_system", "end")
         else "auto"
     )
     return merged

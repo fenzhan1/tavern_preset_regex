@@ -172,6 +172,7 @@
         <label class="status">对话块位置</label>
         <select id="block-position" title="「MoFox 用户上下文」这一块（历史消息 + 上一轮回复 + 工具调用 + 本轮新输入）在请求里的位置">
           <option value="auto">跟随顺序表</option>
+          <option value="before_last_user">插进对话块（预填充夹在历史与新输入之间）</option>
           <option value="after_system">紧跟系统提示词</option>
           <option value="end">固定放最后</option>
         </select>
@@ -621,6 +622,7 @@
         if (state.novel) state.novel.config = data.config;
         const labels = {
           auto: '跟随顺序表（在下方把「MoFox 用户上下文」拖到想要的位置）',
+          before_last_user: '插进对话块：历史/回复/工具调用 → 预设条目 → 本轮新输入',
           after_system: '紧跟系统提示词之后，上一轮回复与工具调用会一起出现在这里',
           end: '固定放在请求最后'
         };

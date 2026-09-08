@@ -373,6 +373,22 @@ def _render_conversation_block(payloads: list[Any]) -> str:
     return "\n\n".join(lines)
 
 
+def _split_before_last_user(
+    convo_block: list[Any],
+) -> tuple[list[Any], list[Any]]:
+    """把对话块按最后一条 user 消息拆成「历史」与「本轮新输入」两段。
+
+    找不到 user 时返回 ``(整个对话块, [])``。
+    """
+    last_user = -1
+    for index, payload in enumerate(convo_block):
+        if str(getattr(payload, "role", "")) == str(ROLE.USER):
+            last_user = index
+    if last_user < 0:
+        return list(convo_block), []
+    return list(convo_block[:last_user]), list(convo_block[last_user:])
+
+
 def _inject_ordered_setvar_payloads(
     payloads: list[Any],
     service: Any,
@@ -476,7 +492,31 @@ def _inject_ordered_setvar_payloads(
             if config is not None
             else "auto"
         )
-        if position == "after_system":
+        if position == "before_last_user":
+            # 预设条目插进对话块内部：历史/上轮回复/工具调用 → 预设条目 → 本轮新输入。
+            history_part, tail_part = _split_before_last_user(convo_block)
+            preset_items = [
+                payload
+                for payload in output
+                if str(getattr(payload, "role", ""))
+                not in (
+                    str(ROLE.SYSTEM),
+                    str(ROLE.TOOL),
+                )
+            ]
+            new_output = [
+                *system_block,
+                *history_part,
+                *preset_items,
+                *function_block,
+                *tail_part,
+            ]
+            preset_names = {
+                len(system_block) + len(history_part) + index: name
+                for index, name in enumerate(preset_names.values())
+            }
+            output = new_output
+        elif position == "after_system":
             # 紧跟 system / tool 固定块之后、所有预设之前：
             # 这样「上轮回复 + 工具调用」跟着系统上下文一起出现，
             # 而后面的预设条目（如 assistant 预填充）仍然排在最后。
@@ -508,7 +548,8 @@ def _inject_ordered_setvar_payloads(
             output[insert_at:insert_at] = convo_block
 
         # 对话块插入后，后面的预设条目下标整体后移，日志里的条目名要对齐。
-        if insert_at < len(output):
+        # before_last_user 分支已在上面处理过，这里跳过。
+        if position != "before_last_user" and insert_at < len(output):
             preset_names = {
                 index + len(convo_block) if index >= insert_at else index: name
                 for index, name in preset_names.items()
