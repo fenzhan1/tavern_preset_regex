@@ -348,3 +348,56 @@ def test_request_respects_custom_variable_name(tmp_path: Path) -> None:
     assert "<novel></novel>" in joined
     # 但小说条目自身仍然注入
     assert "第一章" in joined
+
+
+# ----- WebUI 接口 -----
+
+
+def test_ordered_items_include_readonly_entries(tmp_path: Path) -> None:
+    """WebUI 列表必须能同时列出三块固定内容与小说动态条目。"""
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=True)
+
+    fixed = service.fixed_prompt_items()
+    assert [item["identifier"] for item in fixed] == [
+        "mofox_system",
+        "mofox_tool",
+        "mofox_user",
+    ]
+
+    ordered = service.list_ordered_prompt_items()
+    identifiers = [item["identifier"] for item in ordered]
+    assert "novel_current" in identifiers
+    assert "mofox_system" in identifiers
+    novel_item = next(item for item in ordered if item["identifier"] == "novel_current")
+    assert novel_item["novel"] is True
+    assert novel_item["fixed"] is True
+    assert novel_item["content"] == "{{getvar::current_chapter}}"
+
+
+def test_webui_state_endpoint_ok(tmp_path: Path) -> None:
+    """GET /api/state 必须返回 200（曾因 fixed_prompt_items 的 KeyError 报 500）。"""
+    write_novel(tmp_path)
+    service = make_service(tmp_path, enabled=True)
+    (tmp_path / "setvar.json").write_text(
+        json.dumps(
+            setvar_payload(["mofox_system", "novel_current", "mofox_user"]),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    router_module = importlib.import_module("tavern_preset_regex.router")
+    config = TavernRegexConfig()
+    config.plugin.data_dir = str(tmp_path)
+    config.novel = NovelSection(enabled=True)
+    plugin = type("_FakePlugin", (), {"config": config, "plugin_name": "t"})()
+    router = router_module.TavernRegexAdminRouter(plugin)
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(router.app, raise_server_exceptions=False)
+    for path in ("/api/state", "/api/novel", "/api/novel?stream_id=x"):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path} -> {response.status_code}"
+    assert service.novel_state("x")["total"] == 3

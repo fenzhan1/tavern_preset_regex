@@ -87,7 +87,10 @@ _MARKER_IDENTIFIERS = frozenset(
 # 与 MoFox 主回复指令重复的酒馆默认系统提示词，首次导入时默认停用
 _MOFOX_REDUNDANT_IDENTIFIERS = frozenset(("main", "nsfw"))
 
-# MoFox 主回复请求里永远存在的三块固定内容，加上一条「📖小说当前段落」动态条目。
+# MoFox 主回复请求里永远存在的三块固定内容。
+_MOFOX_FIXED_PROMPT_IDS = ("mofox_system", "mofox_tool", "mofox_user")
+
+# 只读条目的完整顺序：三块固定内容 + 一条「📖小说当前段落」动态条目。
 # 它们在 WebUI 中作为只读条目展示，只允许调整相对顺序，不允许编辑名称、角色或内容。
 _MOFOX_FIXED_ORDER_IDS = (
     "mofox_system",
@@ -578,8 +581,8 @@ class TavernDataService:
 
     @staticmethod
     def fixed_prompt_items() -> list[dict[str, Any]]:
-        """返回 WebUI 展示的三个 MoFox 固定条目。"""
-        return [dict(_MOFOX_FIXED_PROMPTS[key]) for key in _MOFOX_FIXED_ORDER_IDS]
+        """返回 WebUI 展示的三个 MoFox 固定条目（不含小说动态条目）。"""
+        return [dict(_MOFOX_FIXED_PROMPTS[key]) for key in _MOFOX_FIXED_PROMPT_IDS]
 
     def novel_prompt_item(self) -> dict[str, Any]:
         """返回「📖小说当前段落」虚拟条目。
