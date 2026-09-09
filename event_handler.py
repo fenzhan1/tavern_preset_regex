@@ -533,11 +533,15 @@ def _inject_ordered_setvar_payloads(
     }
 
     system_block, function_block, convo_block = _split_mofox_payloads(payloads)
-    # 二次请求：对话块里混着上一轮注入的预设，先剥掉它们（带工具调用的除外）。
-    convo_block, injected = _split_injected_presets(convo_block)
+    # 二次请求：payload 里混着上一轮注入的预设，先把它们剥出来复用。
+    # 关键点：预设条目的角色可能是 system（例如 </clear> 那条），会被
+    # _split_mofox_payloads 分到 system_block 里，所以**两个块都要扫**，
+    # 否则 system 角色的预设每轮都会被重新注入一份，越堆越多。
+    system_block, injected_system = _split_injected_presets(system_block)
+    convo_block, injected_convo = _split_injected_presets(convo_block)
     # 内容 → 已注入的预设 payload，按顺序消费，避免同名内容互相顶掉。
     injected_by_content: dict[str, list[Any]] = {}
-    for content_text, payload in injected:
+    for content_text, payload in [*injected_system, *injected_convo]:
         injected_by_content.setdefault(content_text, []).append(payload)
 
     # 对话块拆成三段，各自按顺序表里的位置插入：

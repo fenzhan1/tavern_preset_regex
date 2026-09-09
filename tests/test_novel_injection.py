@@ -778,6 +778,59 @@ def prepare_conversation_fixture(tmp_path: Path) -> None:
     )
 
 
+def test_system_role_preset_is_not_reinjected(tmp_path: Path) -> None:
+    """角色为 system 的预设不能在每轮请求里重复注入。
+
+    这是线上踩到的坑：``</clear>`` 那条预设的角色是 system，会被
+    ``_split_mofox_payloads`` 分到 system_block，而早期只在对话块里做去重，
+    于是它每轮被重新注入一份，请求里越堆越多（1 → 2 → 3 …）。
+    """
+    prepare_block_fixture(tmp_path)
+    payload_path = tmp_path / "setvar.json"
+    data = json.loads(payload_path.read_text(encoding="utf-8"))
+    # 把 prefill 改成 system 角色，复现 system 预设重复注入
+    for prompt in data["prompts"]:
+        if prompt["identifier"] == "prefill":
+            prompt["role"] = "system"
+    data["mofox_order"] = [
+        "mofox_system",
+        "mofox_user",
+        NEW_INPUT_ENTRY_ID,
+        "prefill",
+        "tail",
+        "mofox_tool",
+    ]
+    payload_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    plugin = make_plugin(tmp_path, enabled=False)
+    payloads = [
+        LLMPayload(ROLE.SYSTEM, [Text("</clear> 原始系统提示")]),
+        LLMPayload(ROLE.USER, [Text("历史：conversation_context")]),
+    ]
+
+    # 连续三轮把上一轮输出当作下一轮输入
+    for round_index in range(3):
+        payloads = run_request_with(plugin, payloads)
+        joined = "\n".join(
+            "".join(part.text for part in payload.content if isinstance(part, Text))
+            for payload in payloads
+        )
+        count = joined.count("明白了。")
+        assert count == 1, f"第 {round_index + 1} 轮 system 预设重复注入：{count} 次"
+
+    # 顺序仍然正确：预填充在历史之后
+    texts = [
+        "".join(part.text for part in payload.content if isinstance(part, Text))
+        for payload in payloads
+    ]
+    index_of = lambda needle: next(  # noqa: E731
+        index for index, text in enumerate(texts) if needle in text
+    )
+    assert index_of("历史：conversation_context") < index_of("明白了。")
+
+
 def test_followup_request_is_reordered_idempotently(tmp_path: Path) -> None:
     """工具调用后的二次请求（payload 里已带注入预设）仍要按顺序表重排。
 
