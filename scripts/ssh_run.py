@@ -44,7 +44,7 @@ def connect(host: str, port: int, user: str, password: str) -> paramiko.SSHClien
 
 
 def run(client: paramiko.SSHClient, command: str) -> int:
-    stdin, stdout, stderr = client.exec_command(command, timeout=120)
+    stdin, stdout, stderr = client.exec_command(command, timeout=900)
     stdin.close()
     out = stdout.read().decode("utf-8", "replace")
     err = stderr.read().decode("utf-8", "replace")
